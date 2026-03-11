@@ -6,9 +6,18 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "patch-package"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@cartesia/cartesia-js": "^3.0.0",
+    "@deepgram/sdk": "^5.0.0",
+    "@livekit/components-react": "^2.9.20",
+    "groq-sdk": "^0.37.0",
+    "livekit-client": "^2.17.2",
+    "livekit-server-sdk": "^2.15.0",
+    "lucide-react": "^0.468.0",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
@@ -20,6 +29,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "patch-package": "^8.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
