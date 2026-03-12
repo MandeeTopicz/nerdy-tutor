@@ -124,7 +124,7 @@ function MicControl() {
   );
 }
 
-/** Wraps RoomAudioRenderer and logs when mounted. */
+/** RoomAudioRenderer plays the audio track published by Simli's avatar participant. */
 function RoomAudioRendererWithLog() {
   useEffect(() => {
     console.log("[Audio] RoomAudioRenderer mounted");
@@ -191,6 +191,37 @@ function useTranscriptMessages(): TranscriptMessage[] {
   }, [transcriptions, localParticipant.identity]);
 }
 
+/**
+ * Wraps useTranscriptMessages so new Tutor lines are held back until the agent
+ * is actually speaking (audio/avatar playing). User lines pass through immediately.
+ * This keeps the transcript in sync with what the student hears.
+ */
+function useSyncedTranscriptMessages(agentState: string): TranscriptMessage[] {
+  const raw = useTranscriptMessages();
+  const [visible, setVisible] = useState<TranscriptMessage[]>([]);
+  const releasedCountRef = useRef(0);
+
+  useEffect(() => {
+    // When agent is speaking (or has finished), release all tutor messages received so far
+    if (agentState === "speaking" || agentState === "listening") {
+      if (raw.length > releasedCountRef.current) {
+        releasedCountRef.current = raw.length;
+        setVisible([...raw]);
+      }
+    } else {
+      // While thinking/processing, only show user messages and previously released messages
+      const newUserOnly = raw.filter((m, i) => i >= releasedCountRef.current && m.role === "You");
+      if (newUserOnly.length > 0) {
+        // Release user messages immediately
+        releasedCountRef.current = raw.length;
+        setVisible([...raw]);
+      }
+    }
+  }, [raw, agentState]);
+
+  return visible;
+}
+
 function LiveTranscriptPanel({
   messages,
   isOpen,
@@ -245,8 +276,10 @@ function TutorRoomInner({
 }) {
   const room = useRoomContext();
   const { videoTrack: agentVideoTrack, state: agentState } = useVoiceAssistant();
+  const stateStr = typeof agentState === "string" ? agentState : (agentState as { state?: string })?.state ?? "connecting";
   const { textStreams } = useTextStream(TOPIC_AGENT_EVENTS);
-  const transcriptMessages = useTranscriptMessages();
+  const rawTranscriptMessages = useTranscriptMessages();
+  const transcriptMessages = useSyncedTranscriptMessages(stateStr);
   const remoteParticipants = useRemoteParticipants();
   const connectionState = useConnectionState();
   const { microphoneTrack } = useLocalParticipant();
@@ -275,10 +308,12 @@ function TutorRoomInner({
       if (payload.type === "session_timeout") {
         endReasonRef.current = "timeout";
         const everResponded = payload.student_ever_responded ?? false;
-        void (async () => {
+        // Agent already waited for closing message to finish speaking before
+        // sending this signal — small grace period for final audio to flush
+        setTimeout(async () => {
           await room.disconnect();
           onEnd?.(getTranscript(), { timedOut: true, everResponded });
-        })();
+        }, 2000);
       }
     } catch { /* ignore */ }
   });
@@ -298,7 +333,7 @@ function TutorRoomInner({
   useEffect(() => {
     const state = typeof agentState === "string" ? agentState : (agentState as { state?: string })?.state;
     if (state === "speaking" && prevAgentStateRef.current !== "speaking") {
-      const lastTutor = [...transcriptMessages].reverse().find((m) => m.role === "Tutor");
+      const lastTutor = [...rawTranscriptMessages].reverse().find((m) => m.role === "Tutor");
       const text = (lastTutor?.text ?? "").toLowerCase();
       const positive = ["exactly", "correct", "great", "right", "yes"].some((w) => text.includes(w));
       if (positive) {
@@ -308,9 +343,7 @@ function TutorRoomInner({
       }
     }
     prevAgentStateRef.current = state;
-  }, [agentState, transcriptMessages]);
-
-  const stateStr = typeof agentState === "string" ? agentState : (agentState as { state?: string })?.state ?? "connecting";
+  }, [agentState, rawTranscriptMessages]);
 
   useEffect(() => {
     console.log("[LiveKit] connectionState:", connectionState);
@@ -358,34 +391,41 @@ function TutorRoomInner({
     }
   }, [textStreams]);
 
+  if (connectionState === "disconnected") {
+    return (
+      <div className="flex h-[calc(100vh-60px)] w-full flex-row items-center justify-center px-12 font-sans">
+        <p className="text-neutral-400">Session ended.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-[calc(100vh-60px)] w-full flex-row items-center justify-center gap-8 px-12 font-sans">
       {/* Left column: avatar + controls + latency */}
       <div className="flex w-[35vw] min-w-[320px] max-w-[560px] flex-shrink-0 flex-col items-center gap-4">
         <div className="relative w-full">
-          {stateStr === "thinking" && (
-            <div className="absolute -inset-[2px] -z-10 animate-spin rounded-2xl bg-[conic-gradient(from_0deg,transparent,transparent_60%,rgba(0,212,200,0.5),transparent)] opacity-80" />
-          )}
+          {/* Glow behind tile only — video stays full opacity */}
           <div
-            className={`relative w-full aspect-[3/4] overflow-hidden rounded-2xl transition-all duration-300 ${
+            className={`pointer-events-none absolute -inset-1 -z-10 rounded-2xl transition-all duration-300 ${
               celebrating
-                ? "ring-2 ring-green-400 shadow-[0_0_30px_rgba(74,222,128,0.5)]"
+                ? "shadow-[0_0_50px_rgba(74,222,128,0.4)]"
                 : stateStr === "listening"
-                  ? "ring-2 ring-teal-400/60 animate-pulse"
+                  ? "shadow-[0_0_40px_rgba(0,212,200,0.35)]"
                   : stateStr === "thinking"
-                    ? "ring-2 ring-teal-400/40"
+                    ? "shadow-[0_0_40px_rgba(245,158,11,0.35)]"
                     : stateStr === "speaking"
-                      ? "ring-2 ring-teal-400 shadow-[0_0_20px_rgba(0,212,200,0.4)]"
-                      : ""
-            } ${CARD_STYLE}`}
-          >
-          {videoTrack ? (
-            <UnmutedVideoTrack trackRef={videoTrack} className="h-full w-full object-cover" />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center bg-white/5 text-neutral-400 text-sm">
-              {remoteParticipants.length > 0 ? "Connecting avatar…" : "Waiting for agent…"}
-            </div>
-          )}
+                      ? "shadow-[0_0_45px_rgba(74,222,128,0.4)]"
+                      : "shadow-none"
+            }`}
+          />
+          <div className={`relative w-full aspect-[3/4] overflow-hidden rounded-2xl ${CARD_STYLE}`}>
+            {videoTrack ? (
+              <UnmutedVideoTrack trackRef={videoTrack} className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center bg-white/5 text-neutral-400 text-sm">
+                {""}
+              </div>
+            )}
           </div>
         </div>
         <div className="mt-3 flex w-full flex-row flex-wrap items-center justify-center gap-4">

@@ -31,6 +31,7 @@ logger.setLevel(logging.DEBUG)
 def _build_socratic_prompt(subject: str, grade: str) -> str:
     return f"""You are NerdyTutor, an AI tutor teaching {subject} at a {grade} grade level using the Socratic method.
 You NEVER give direct answers — every response must end with a question.
+Never repeat back what the student just said. Respond only to the meaning/content of what they said.
 When a student is wrong, ask a question that reveals the error without saying "wrong".
 When a student is right, ask them to explain why.
 When a student is stuck, ask a simpler bridging question.
@@ -38,6 +39,11 @@ Keep responses to 2-3 sentences maximum plus one question."""
 
 def _build_greeting(subject: str) -> str:
     return f"Hi! I'm your tutor today. We're learning about {subject}. What would you like to explore first?"
+
+
+# Module-level constants for tests and reuse (default subject/grade)
+SOCRATIC_PROMPT = _build_socratic_prompt("fractions", "8th")
+GREETING = _build_greeting("fractions")
 
 
 async def entrypoint(ctx: JobContext):
@@ -77,10 +83,11 @@ async def entrypoint(ctx: JobContext):
     )
     logger.info("LLM configured: base_url=%s model=%s", groq_base_url, groq_model)
 
-    # TTS: Cartesia Sonic 3 streaming — plugin handles encoding/format internally
+    # TTS: Cartesia Sonic 3 streaming — 16kHz to match Simli's native rate (avoids resampling)
     tts = cartesia.TTS(
         model="sonic-3",
         voice="79a125e8-cd45-4c13-8a67-188112f4dd22",  # friendly voice
+        sample_rate=16000,  # match Simli SAMPLE_RATE to skip resampling
     )
 
     # Silero VAD — less sensitive to reduce background/ambient noise pickup
@@ -97,7 +104,7 @@ async def entrypoint(ctx: JobContext):
         min_endpointing_delay=0.0,
         max_endpointing_delay=0.8,  # was 3.0 — 3s was way too long
         preemptive_generation=True,
-        user_away_timeout=120.0,  # 2 minutes before marking user away
+        user_away_timeout=None,  # we handle inactivity ourselves in inactivity_monitor (20s check-in, ~45s close)
     )
 
     # Log metrics when collected — metrics come as EOUMetrics, STTMetrics, LLMMetrics, TTSMetrics
@@ -145,7 +152,25 @@ async def entrypoint(ctx: JobContext):
 
     greeting_sent = [False]  # ref so closure can mutate
     greeting_done = [False]  # True when agent has finished speaking the greeting
-    rephrased_done = [False]  # rephrase sent this wait; reset when student speaks
+    second_30s_after_check_in = [False]  # True after we said "are you still there?"; next 30s = close
+
+    async def say_and_wait(text: str, timeout: float = 15.0):
+        """Call session.say() and wait for the agent to finish speaking (speaking → listening)."""
+        done = asyncio.Event()
+
+        def _on_state(ev):
+            old = getattr(ev, "old_state", None)
+            if old == "speaking" and ev.new_state == "listening":
+                done.set()
+
+        session.on("agent_state_changed", _on_state)
+        try:
+            session.say(text)
+            await asyncio.wait_for(done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("[Timeout] say_and_wait timed out after %.0fs for: %s", timeout, text[:60])
+        finally:
+            session.off("agent_state_changed", _on_state)
 
     def on_agent_state_changed(ev):
         old_state = getattr(ev, "old_state", None)
@@ -161,7 +186,7 @@ async def entrypoint(ctx: JobContext):
             logger.info("[TTS] speaking started")
         elif old_state == "speaking" and new_state == "listening":
             logger.info("[Playback] finished, now listening")
-            # Reset inactivity clock — 15s/60s count only after agent has asked and is waiting
+            # Reset inactivity clock — 30s check-in / 60s close count only after agent has asked and is waiting
             last_student_response_time[0] = time.time()
         if new_state == "listening":
             logger.info("Session started (agent state = listening)")
@@ -302,44 +327,61 @@ async def entrypoint(ctx: JobContext):
         if transcript:
             last_student_response_time[0] = time.time()
             student_ever_responded[0] = True
-            rephrased_done[0] = False
+            second_30s_after_check_in[0] = False
+
+    _closing_message = (
+        "No worries! It looks like you might have stepped away. "
+        "Great work today — come back anytime to keep learning. Goodbye!"
+    )
 
     async def inactivity_monitor():
         # Wait until greeting is done before starting
         while not greeting_done[0]:
             await asyncio.sleep(1)
         last_student_response_time[0] = time.time()  # reset clock after greeting
+        logger.info("[Timeout] Inactivity monitor started — first check-in at 20s, then close at 25s after check-in")
 
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)  # check every 2s so timers fire reliably
             if not greeting_done[0]:
                 continue
             elapsed = time.time() - last_student_response_time[0]
-            if elapsed >= 60:
-                logger.info("[Timeout] No response for 60s, ending session")
-                try:
-                    await ctx.room.local_participant.publish_data(
-                        json.dumps({
-                            "type": "session_timeout",
-                            "student_ever_responded": student_ever_responded[0],
-                        }).encode(),
-                        reliable=True,
-                    )
-                except Exception as e:
-                    logger.debug("publish session_timeout: %s", e)
-                await asyncio.sleep(1)
-                ctx.shutdown(reason="session_timeout")
-                return
-            elif elapsed >= 15 and not rephrased_done[0]:
-                rephrased_done[0] = True
-                logger.info("[Timeout] No response for 15s, rephrasing")
-                try:
-                    await session.generate_reply(
-                        instructions="The student hasn't responded in 15 seconds. Gently rephrase your last question in a simpler way, or ask if they need a hint. Keep it encouraging and brief."
-                    )
-                except RuntimeError as e:
-                    if "isn't running" not in str(e) and "is closing" not in str(e):
-                        raise
+            if second_30s_after_check_in[0]:
+                # Already said "are you still there?"; 25s more with no response → warm close
+                if elapsed >= 25:
+                    logger.info("[Timeout] No response after check-in, ending session")
+                    try:
+                        await say_and_wait(_closing_message, timeout=15.0)
+                    except Exception as e:
+                        logger.debug("say closing: %s", e)
+                    # Signal frontend AFTER speech finishes
+                    try:
+                        await ctx.room.local_participant.publish_data(
+                            json.dumps({
+                                "type": "session_timeout",
+                                "student_ever_responded": student_ever_responded[0],
+                            }).encode(),
+                            reliable=True,
+                        )
+                    except Exception as e:
+                        logger.debug("publish session_timeout: %s", e)
+                    await asyncio.sleep(1)
+                    ctx.shutdown(reason="session_timeout")
+                    return
+            else:
+                # First 20s of no response → check-in (before Simli's ~30s idle timeout drops avatar)
+                if elapsed >= 20:
+                    logger.info("[Timeout] No response for 20s, sending check-in")
+                    try:
+                        await say_and_wait(
+                            "Hey, are you still there? Would you like me to repeat the question?",
+                            timeout=12.0,
+                        )
+                    except RuntimeError as e:
+                        if "isn't running" not in str(e) and "is closing" not in str(e):
+                            raise
+                    second_30s_after_check_in[0] = True
+                    last_student_response_time[0] = time.time()
 
     agent = Agent(
         instructions=system_prompt,

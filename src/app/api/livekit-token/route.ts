@@ -37,8 +37,8 @@ export async function GET(req: NextRequest) {
     await roomSvc.createRoom({
       name: roomName,
       metadata: roomMetadata,
-      emptyTimeout: 60,
-      departureTimeout: 30,
+      emptyTimeout: 120,
+      departureTimeout: 90,
       agents: [new RoomAgentDispatch({ agentName: AGENT_NAME })],
     });
 

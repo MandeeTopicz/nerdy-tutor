@@ -1,0 +1,114 @@
+{
+  "turns": [
+    {
+      "stt_ms": 168.8,
+      "llm_ms": 373.8,
+      "tts_ms": 170.8,
+      "e2e_ms": 750.2,
+      "utterance": "Yes",
+      "turn": 1
+    },
+    {
+      "stt_ms": 90.4,
+      "llm_ms": 348.4,
+      "tts_ms": 121.4,
+      "e2e_ms": 574.3,
+      "utterance": "No",
+      "turn": 2
+    },
+    {
+      "stt_ms": 48.8,
+      "llm_ms": 397.6,
+      "tts_ms": 78.7,
+      "e2e_ms": 539.0,
+      "utterance": "I think it's 3 over 4",
+      "turn": 3
+    },
+    {
+      "stt_ms": 102.3,
+      "llm_ms": 396.6,
+      "tts_ms": 188.7,
+      "e2e_ms": 649.1,
+      "utterance": "The numerator is the top number",
+      "turn": 4
+    },
+    {
+      "stt_ms": 76.0,
+      "llm_ms": 395.6,
+      "tts_ms": 137.7,
+      "e2e_ms": 573.5,
+      "utterance": "I don't know",
+      "turn": 5
+    },
+    {
+      "stt_ms": 118.0,
+      "llm_ms": 371.8,
+      "tts_ms": 191.3,
+      "e2e_ms": 712.0,
+      "utterance": "Can you repeat the question?",
+      "turn": 6
+    },
+    {
+      "stt_ms": 113.5,
+      "llm_ms": 360.1,
+      "tts_ms": 175.7,
+      "e2e_ms": 643.7,
+      "utterance": "Is it when the cell splits?",
+      "turn": 7
+    },
+    {
+      "stt_ms": 108.8,
+      "llm_ms": 170.6,
+      "tts_ms": 67.9,
+      "e2e_ms": 337.8,
+      "utterance": "Chlorophyll?",
+      "turn": 8
+    },
+    {
+      "stt_ms": 125.4,
+      "llm_ms": 228.4,
+      "tts_ms": 155.4,
+      "e2e_ms": 524.1,
+      "utterance": "(silence)",
+      "turn": 9
+    },
+    {
+      "stt_ms": 91.9,
+      "llm_ms": 434.3,
+      "tts_ms": 131.8,
+      "e2e_ms": 648.8,
+      "utterance": "Maybe the denominator stays the same when you add",
+      "turn": 10
+    }
+  ],
+  "summary": {
+    "stt_ms": {
+      "min": 48.8,
+      "max": 168.8,
+      "p50": 105.55,
+      "p95": 149.26999999999995,
+      "mean": 104.39
+    },
+    "llm_ms": {
+      "min": 170.6,
+      "max": 434.3,
+      "p50": 372.8,
+      "p95": 417.78499999999997,
+      "mean": 347.72
+    },
+    "tts_ms": {
+      "min": 67.9,
+      "max": 191.3,
+      "p50": 146.55,
+      "p95": 190.13,
+      "mean": 141.94
+    },
+    "e2e_ms": {
+      "min": 337.8,
+      "max": 750.2,
+      "p50": 609.0,
+      "p95": 733.01,
+      "mean": 595.25
+    }
+  }
+}

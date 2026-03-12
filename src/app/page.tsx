@@ -422,13 +422,6 @@ function SessionSummary({
             <div className="mt-8 flex flex-wrap justify-center gap-4">
               <button
                 type="button"
-                onClick={onStartNew}
-                className="rounded-full bg-[#00d4c8] px-8 py-3 font-semibold text-[#0f1129] transition hover:bg-[#22d3ee]"
-              >
-                Start New Session
-              </button>
-              <button
-                type="button"
                 onClick={onBackToHome}
                 className="rounded-full border border-white/20 px-6 py-3 font-medium text-neutral-300 transition hover:bg-white/5"
               >

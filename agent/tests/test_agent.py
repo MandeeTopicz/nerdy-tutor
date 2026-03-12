@@ -82,7 +82,7 @@ def test_prewarm_vad_config_activation_threshold():
         prewarm(proc)
     mock_silero.VAD.load.assert_called_once()
     kwargs = mock_silero.VAD.load.call_args[1]
-    assert kwargs.get("activation_threshold") == 0.55
+    assert kwargs.get("activation_threshold") == 0.6
 
 
 def test_prewarm_vad_config_min_silence_duration():
@@ -91,7 +91,7 @@ def test_prewarm_vad_config_min_silence_duration():
     with patch("agent.agent.silero") as mock_silero:
         prewarm(proc)
     kwargs = mock_silero.VAD.load.call_args[1]
-    assert kwargs.get("min_silence_duration") == 0.3
+    assert kwargs.get("min_silence_duration") == 0.2
 
 
 # ---- Worker options: agent_name ----
@@ -119,6 +119,7 @@ def mock_ctx():
     ctx = MagicMock()
     ctx.connect = AsyncMock()
     ctx.room = MagicMock()
+    ctx.room.metadata = "{}"
     ctx.proc = MagicMock()
     ctx.proc.userdata = {"vad": MagicMock()}
     return ctx
@@ -146,9 +147,9 @@ async def test_entrypoint_stt_config_deepgram_nova2_interim_endpointing(mock_ctx
                 await entrypoint(mock_ctx)
     mock_dg.STT.assert_called_once()
     kwargs = mock_dg.STT.call_args[1]
-    assert kwargs.get("model") == "nova-2"
+    assert kwargs.get("model") == "nova-3"
     assert kwargs.get("interim_results") is True
-    assert kwargs.get("endpointing_ms") == 50
+    assert kwargs.get("endpointing_ms") == 200
 
 
 @pytest.mark.asyncio
@@ -255,3 +256,267 @@ def test_env_or_dotenv_has_api_keys():
         content = f.read()
     for key in ("GROQ_API_KEY", "CARTESIA_API_KEY", "DEEPGRAM_API_KEY"):
         assert key in content, f".env.local should define {key}"
+
+
+# ---- Conversation flow: inactivity monitor (mock-based, no live connection) ----
+# Note: These tests require Simli to be mocked at runtime; the agent holds a reference to the
+# livekit.plugins.simli module so patching must occur before the agent module is loaded, or run
+# in an integration environment with job context.
+@pytest.mark.asyncio
+@pytest.mark.skip(reason="Simli AvatarSession requires job context; run in integration env or mock at import time")
+async def test_inactivity_monitor_check_in_fires_at_30s(mock_ctx):
+    """After 31s (simulated) with no response, session.say is called with 'still there'."""
+    import asyncio
+    import time as time_module
+    session_start_fut = asyncio.get_running_loop().create_future()  # never resolve so entrypoint stays in session.start
+    # 0 for monitor start; then 21 so elapsed >= 20 (current threshold) triggers check-in
+    time_returns = [0.0] + [21.0] * 100
+    call_index = [0]
+
+    def time_mock():
+        i = call_index[0]
+        call_index[0] += 1
+        return time_returns[i] if i < len(time_returns) else time_returns[-1]
+
+    session_handlers = {}
+    def capture_session_on(ev, fn=None):
+        if fn is not None:
+            session_handlers.setdefault(ev, []).append(fn)
+
+    room_handlers = {}
+    def capture_room_on(ev):
+        def dec(f):
+            room_handlers[ev] = f
+            return f
+        return dec
+
+    mock_ctx.room.on = capture_room_on
+    mock_session = MagicMock()
+    mock_session.on = capture_session_on
+    mock_session.start = AsyncMock(return_value=session_start_fut)
+    mock_session.say = MagicMock()
+    mock_session.off = MagicMock()
+    mock_session.output = MagicMock()
+
+    mock_avatar = MagicMock()
+    mock_avatar.start = AsyncMock()
+    import livekit.plugins.simli as simli_mod
+    _original_avatar = simli_mod.AvatarSession
+    simli_mod.AvatarSession = MagicMock(return_value=mock_avatar)
+    task = None
+    try:
+        with (
+            patch("agent.agent.deepgram") as mock_dg,
+            patch("agent.agent.openai"),
+            patch("agent.agent.cartesia"),
+            patch("agent.agent.AgentSession", return_value=mock_session),
+            patch("agent.agent.Agent"),
+            patch("agent.agent.time.time", side_effect=time_mock),
+            patch("agent.agent.asyncio.sleep", new_callable=AsyncMock),  # let sleeps return immediately
+        ):
+            mock_dg.STT.return_value = MagicMock()
+            task = asyncio.create_task(entrypoint(mock_ctx))
+            await asyncio.sleep(0.2)
+            # Set greeting_done by firing agent_state_changed: first listening (sets greeting_sent, schedules greeting)
+            for h in session_handlers.get("agent_state_changed", []):
+                ev = MagicMock()
+                ev.old_state = None
+                ev.new_state = "listening"
+                try:
+                    h(ev)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.1)
+            # Then speaking -> listening so greeting_done is set
+            for h in session_handlers.get("agent_state_changed", []):
+                ev = MagicMock()
+                ev.old_state = "speaking"
+                ev.new_state = "listening"
+                setattr(ev, "new_state", "listening")
+                try:
+                    h(ev)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.5)
+            # Monitor will see elapsed >= 20 and call say_and_wait("Hey, are you still there?...")
+            # say_and_wait does session.say() then waits for speaking->listening; fire that so it returns
+            await asyncio.sleep(0.3)
+            for h in session_handlers.get("agent_state_changed", []):
+                ev = MagicMock()
+                ev.old_state = "speaking"
+                ev.new_state = "listening"
+                try:
+                    h(ev)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.2)
+            assert any(
+                c[0] and "still there" in str(c[0][0]) for c in mock_session.say.call_args_list
+            ), "session.say should be called with a string containing 'still there'"
+    finally:
+        simli_mod.AvatarSession = _original_avatar
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.skip(reason="Simli AvatarSession requires job context; run in integration env or mock at import time")
+async def test_inactivity_monitor_closes_at_60s(mock_ctx):
+    """After check-in, 61s (simulated) with no response → ctx.shutdown is called."""
+    import asyncio
+    import time as time_module
+    session_start_fut = asyncio.get_running_loop().create_future()
+    # First 0s for monitor start; then 26 so elapsed >= 25 after check-in
+    time_returns = [0.0, 0.0, 0.0, 21.0, 21.0, 21.0, 0.0, 26.0, 26.0]
+    call_index = [0]
+
+    def time_mock():
+        i = call_index[0]
+        call_index[0] += 1
+        return time_returns[i] if i < len(time_returns) else time_returns[-1]
+
+    session_handlers = {}
+    def capture_session_on(ev, fn=None):
+        if fn is not None:
+            session_handlers.setdefault(ev, []).append(fn)
+
+    room_handlers = {}
+    def capture_room_on(ev):
+        def dec(f):
+            room_handlers[ev] = f
+            return f
+        return dec
+
+    mock_ctx.room.on = capture_room_on
+    mock_session = MagicMock()
+    mock_session.on = capture_session_on
+    mock_session.start = AsyncMock(return_value=session_start_fut)
+    mock_session.say = MagicMock()
+    mock_session.off = MagicMock()
+    mock_session.output = MagicMock()
+    mock_ctx.shutdown = MagicMock()
+
+    mock_avatar = MagicMock()
+    mock_avatar.start = AsyncMock()
+    import agent.agent as agent_mod
+    import livekit.plugins.simli as real_simli
+    mock_simli_mod = MagicMock()
+    mock_simli_mod.SimliConfig = real_simli.SimliConfig
+    mock_simli_mod.AvatarSession.return_value = mock_avatar
+    with (
+        patch("agent.agent.deepgram") as mock_dg,
+        patch("agent.agent.openai"),
+        patch("agent.agent.cartesia"),
+        patch.object(agent_mod, "simli", mock_simli_mod),
+        patch("agent.agent.AgentSession", return_value=mock_session),
+        patch("agent.agent.Agent"),
+        patch("agent.agent.time.time", side_effect=time_mock),
+        patch("agent.agent.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        mock_dg.STT.return_value = MagicMock()
+        mock_ctx.room.local_participant.publish_data = AsyncMock()
+        # We cannot patch say_and_wait (local to entrypoint). So we rely on real flow and fire
+        # speaking->listening so say_and_wait returns. Run long enough for monitor to do check-in then close.
+        task = asyncio.create_task(entrypoint(mock_ctx))
+        await asyncio.sleep(0.2)
+        for h in session_handlers.get("agent_state_changed", []):
+            ev = MagicMock()
+            ev.old_state = None
+            ev.new_state = "listening"
+            try:
+                h(ev)
+            except Exception:
+                pass
+        await asyncio.sleep(0.1)
+        for h in session_handlers.get("agent_state_changed", []):
+            ev = MagicMock()
+            ev.old_state = "speaking"
+            ev.new_state = "listening"
+            try:
+                h(ev)
+            except Exception:
+                pass
+        # Let monitor run: first 21s elapsed -> check-in (say_and_wait). Fire speaking->listening to unblock.
+        await asyncio.sleep(0.5)
+        for h in session_handlers.get("agent_state_changed", []):
+            ev = MagicMock()
+            ev.old_state = "speaking"
+            ev.new_state = "listening"
+            try:
+                h(ev)
+            except Exception:
+                pass
+        # More iterations so second_30s_after_check_in and elapsed >= 25 -> shutdown
+        await asyncio.sleep(1.0)
+        for _ in range(3):
+            for h in session_handlers.get("agent_state_changed", []):
+                ev = MagicMock()
+                ev.old_state = "speaking"
+                ev.new_state = "listening"
+                try:
+                    h(ev)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.3)
+        mock_ctx.shutdown.assert_called_once()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_hint_request_triggers_say(mock_ctx):
+    """Simulate data message type 'hint_request' → session.say is called."""
+    import asyncio
+    import json as json_mod
+    session_start_fut = asyncio.get_running_loop().create_future()
+    room_handlers = {}
+    def capture_room_on(ev):
+        def dec(f):
+            room_handlers[ev] = f
+            return f
+        return dec
+
+    mock_ctx.room.on = capture_room_on
+    mock_session = MagicMock()
+    mock_session.on = MagicMock()
+    mock_session.start = AsyncMock(return_value=session_start_fut)
+    mock_session.say = MagicMock()
+    mock_session.off = MagicMock()
+    mock_session.output = MagicMock()
+    mock_session.generate_reply = AsyncMock()
+
+    with (
+        patch("agent.agent.deepgram") as mock_dg,
+        patch("agent.agent.openai"),
+        patch("agent.agent.cartesia"),
+        patch("agent.agent.simli") as mock_simli,
+        patch("agent.agent.AgentSession", return_value=mock_session),
+        patch("agent.agent.Agent"),
+    ):
+        mock_dg.STT.return_value = MagicMock()
+        mock_simli.AvatarSession.return_value.start = AsyncMock()
+        task = asyncio.create_task(entrypoint(mock_ctx))
+        await asyncio.sleep(0.15)
+        handler = room_handlers.get("data_received")
+        assert handler is not None
+        packet = MagicMock()
+        packet.data = json_mod.dumps({"type": "hint_request"}).encode()
+        handler(packet)
+        await asyncio.sleep(0.2)
+        say_calls = mock_session.say.call_args_list
+        assert any(
+            len(c[0]) and "nudge" in (c[0][0] or "")
+            for c in say_calls
+        ), "session.say should be called with a string containing 'nudge'"
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
