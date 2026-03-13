@@ -44,7 +44,7 @@ GRADE_6, GRADE_7, GRADE_8, GRADE_9, GRADE_10, GRADE_11, GRADE_12 = (
 MATH, SCIENCE, ENGLISH = "MATH", "SCIENCE", "ENGLISH"
 
 INTRO_TEXT = (
-    "Hi! I'm Nerd, your AI tutor. I'm here to help you learn anything you're curious about. What's your name?"
+    "Hey there, welcome to your tutoring session. Before we get started, what's your name?"
 )
 
 # Grade-level profiles: general + subject-specific instructions per grade

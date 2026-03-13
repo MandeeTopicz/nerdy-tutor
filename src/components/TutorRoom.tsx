@@ -22,6 +22,7 @@ import type { TrackReference } from "@livekit/components-core";
 const TOPIC_AGENT_EVENTS = "lk.agent.events";
 
 export type TranscriptMessage = { role: "You" | "Tutor"; text: string };
+export type TranscriptEntry = { role: "tutor" | "student"; text: string; timestamp: number };
 export type SessionEndMeta = { timedOut?: boolean; everResponded?: boolean };
 const SESSION_BG = "bg-[#0f1129]";
 const SESSION_GRADIENT = "bg-gradient-to-b from-[#0f1129] to-[#1a1440]";
@@ -97,19 +98,22 @@ function UnmutedVideoTrack({
 function EndSessionButton({
   onEnd,
   getTranscript,
+  getDurationSeconds,
   onBeforeEnd,
 }: {
-  onEnd?: (messages: TranscriptMessage[], meta?: SessionEndMeta) => void;
-  getTranscript: () => TranscriptMessage[];
+  onEnd?: (transcript: TranscriptEntry[], durationSeconds: number, meta?: SessionEndMeta) => void;
+  getTranscript: () => TranscriptEntry[];
+  getDurationSeconds: () => number;
   onBeforeEnd?: () => void;
 }) {
   const room = useRoomContext();
   const handleEndSession = useCallback(async () => {
     onBeforeEnd?.();
-    const messages = getTranscript();
+    const transcript = getTranscript();
+    const durationSeconds = getDurationSeconds();
     await room.disconnect();
-    onEnd?.(messages);
-  }, [room, onEnd, getTranscript, onBeforeEnd]);
+    onEnd?.(transcript, durationSeconds);
+  }, [room, onEnd, getTranscript, getDurationSeconds, onBeforeEnd]);
   return (
     <button
       type="button"
@@ -305,10 +309,12 @@ function LiveTranscriptPanel({
 function TutorRoomInner({
   onEnd,
   getTranscript,
+  getDurationSeconds,
   subject = "fractions",
 }: {
-  onEnd?: (messages: TranscriptMessage[], meta?: SessionEndMeta) => void;
-  getTranscript: () => TranscriptMessage[];
+  onEnd?: (transcript: TranscriptEntry[], durationSeconds: number, meta?: SessionEndMeta) => void;
+  getTranscript: () => TranscriptEntry[];
+  getDurationSeconds: () => number;
   subject?: string;
 }) {
   const room = useRoomContext();
@@ -345,11 +351,13 @@ function TutorRoomInner({
       if (payload.type === "session_timeout") {
         endReasonRef.current = "timeout";
         const everResponded = payload.student_ever_responded ?? false;
+        const transcript = getTranscript();
+        const durationSeconds = getDurationSeconds();
         // Agent already waited for closing message to finish speaking before
         // sending this signal — small grace period for final audio to flush
         setTimeout(async () => {
           await room.disconnect();
-          onEnd?.(getTranscript(), { timedOut: true, everResponded });
+          onEnd?.(transcript, durationSeconds, { timedOut: true, everResponded });
         }, 2000);
       }
     } catch { /* ignore */ }
@@ -364,8 +372,10 @@ function TutorRoomInner({
     if (endReasonRef.current !== null) return;
     if (!wasConnectedRef.current) return;
     endReasonRef.current = "unexpected";
-    onEnd?.(getTranscript(), { timedOut: true, everResponded: false });
-  }, [connectionState, getTranscript, onEnd]);
+    const transcript = getTranscript();
+    const durationSeconds = getDurationSeconds();
+    onEnd?.(transcript, durationSeconds, { timedOut: true, everResponded: false });
+  }, [connectionState, getTranscript, getDurationSeconds, onEnd]);
 
   useEffect(() => {
     const state = typeof agentState === "string" ? agentState : (agentState as { state?: string })?.state;
@@ -471,6 +481,7 @@ function TutorRoomInner({
           <EndSessionButton
             onEnd={onEnd}
             getTranscript={getTranscript}
+            getDurationSeconds={getDurationSeconds}
             onBeforeEnd={() => { endReasonRef.current = "button"; }}
           />
           <HintButton />
@@ -503,14 +514,32 @@ function RoomContent({
   grade = "8th",
   subject = "fractions",
 }: {
-  onEnd?: (messages: TranscriptMessage[], meta?: SessionEndMeta) => void;
+  onEnd?: (transcript: TranscriptEntry[], durationSeconds: number, meta?: SessionEndMeta) => void;
   grade?: string;
   subject?: string;
 }) {
   const transcriptMessages = useTranscriptMessages();
-  const messagesRef = useRef<TranscriptMessage[]>([]);
-  messagesRef.current = transcriptMessages;
-  const getTranscript = useCallback(() => [...messagesRef.current], []);
+  const sessionStartRef = useRef<number | null>(null);
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+
+  if (sessionStartRef.current == null) sessionStartRef.current = Date.now();
+
+  useEffect(() => {
+    const entries: TranscriptEntry[] = transcriptMessages.map((m, i) => {
+      const role = m.role === "You" ? "student" : "tutor";
+      const existing = transcriptRef.current[i];
+      const timestamp = existing?.text === m.text ? (existing?.timestamp ?? Date.now()) : Date.now();
+      return { role, text: m.text, timestamp };
+    });
+    transcriptRef.current = entries;
+  }, [transcriptMessages]);
+
+  const getTranscript = useCallback(() => [...transcriptRef.current], []);
+  const getDurationSeconds = useCallback(
+    () => Math.floor((Date.now() - (sessionStartRef.current ?? Date.now())) / 1000),
+    []
+  );
+
   return (
     <>
       <RoomAudioRendererWithLog />
@@ -527,7 +556,7 @@ function RoomContent({
           </nav>
         </header>
         <main className="flex min-h-0 flex-1 overflow-hidden">
-          <TutorRoomInner onEnd={onEnd} getTranscript={getTranscript} subject={subject} />
+          <TutorRoomInner onEnd={onEnd} getTranscript={getTranscript} getDurationSeconds={getDurationSeconds} subject={subject} />
         </main>
       </div>
     </>
@@ -543,7 +572,7 @@ export default function TutorRoom({
   autoConnect?: boolean;
   grade?: string;
   subject?: string;
-  onEnd?: (messages: TranscriptMessage[], meta?: SessionEndMeta) => void;
+  onEnd?: (transcript: TranscriptEntry[], durationSeconds: number, meta?: SessionEndMeta) => void;
 }) {
   const [token, setToken] = useState<string | null>(null);
   const [livekitUrl, setLivekitUrl] = useState<string | null>(null);

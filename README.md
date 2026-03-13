@@ -1,5 +1,11 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Environment Variables
+
+Create a `.env.local` file in the project root with:
+
+- `ANTHROPIC_API_KEY` — Required for session summaries. Get a key from [Anthropic Console](https://console.anthropic.com/). Add this to your Vercel project’s environment variables when deploying.
+
 ## Getting Started
 
 First, run the development server:

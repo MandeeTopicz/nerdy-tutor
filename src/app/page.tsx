@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Calculator, Leaf, Microscope } from "lucide-react";
+import { SessionSummary, type SessionSummaryData } from "@/components/SessionSummary";
+import type { TranscriptEntry } from "@/components/TutorRoom";
 
 const TutorRoom = dynamic(() => import("@/components/TutorRoom"), {
   ssr: false,
@@ -77,6 +79,20 @@ const LANDING_BG = "bg-[#0f1129]";
 const LANDING_GRADIENT = "bg-gradient-to-b from-[#0f1129] to-[#1a1440]";
 
 const DEFAULT_GRADE = "8th";
+
+const TOPIC_TO_SUBJECT: Record<string, string> = {
+  fractions: "MATH",
+  "cell-mitosis": "SCIENCE",
+  photosynthesis: "SCIENCE",
+};
+
+function inferTopicFromSuggestion(text: string): string | null {
+  const t = text.toLowerCase();
+  if (t.includes("fraction") || t.includes("numerat") || t.includes("denominat") || t.includes("equivalent")) return "fractions";
+  if (t.includes("mitosis") || t.includes("cell ") || t.includes("cell cycle") || t.includes("prophase") || t.includes("metaphase")) return "cell-mitosis";
+  if (t.includes("photosynthesis") || t.includes("chlorophyll") || t.includes("calvin") || t.includes("glucose")) return "photosynthesis";
+  return null;
+}
 
 function Landing({
   subject,
@@ -190,14 +206,100 @@ function Landing({
   );
 }
 
+type SummaryView = "loading" | "summary" | "error";
+
 export default function Home() {
   const [inSession, setInSession] = useState(false);
   const [subject, setSubject] = useState<string | null>("fractions");
   const [grade, setGrade] = useState<string | null>(null);
+  const [summaryView, setSummaryView] = useState<SummaryView | null>(null);
+  const [summaryData, setSummaryData] = useState<SessionSummaryData | null>(null);
+  const lastSubjectRef = useRef<string>("fractions");
+  const lastGradeRef = useRef<string>("8th");
 
-  const handleEnd = () => {
-    setInSession(false);
-  };
+  const handleEnd = useCallback(
+    async (transcript: TranscriptEntry[], durationSeconds: number) => {
+      setInSession(false);
+      setSummaryView("loading");
+      lastSubjectRef.current = subject ?? "fractions";
+      lastGradeRef.current = grade ?? DEFAULT_GRADE;
+
+      const transcriptText = transcript
+        .map((e) => `${e.role === "student" ? "Student" : "Tutor"}: ${e.text}`)
+        .join("\n");
+
+      try {
+        const res = await fetch("/api/session-summary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transcript: transcriptText,
+            studentName: "",
+            grade: lastGradeRef.current,
+            subject: TOPIC_TO_SUBJECT[lastSubjectRef.current] ?? "MATH",
+            topic: lastSubjectRef.current,
+            durationSeconds,
+          }),
+        });
+        if (!res.ok) throw new Error("Summary failed");
+        const data = (await res.json()) as SessionSummaryData;
+        setSummaryData(data);
+        setSummaryView("summary");
+      } catch {
+        setSummaryView("error");
+      }
+    },
+    [subject, grade]
+  );
+
+  const goToLanding = useCallback((clearTopic = false) => {
+    setSummaryView(null);
+    setSummaryData(null);
+    if (clearTopic) setSubject(null);
+  }, []);
+
+  const handleSuggestedTopicClick = useCallback((topicText: string) => {
+    const topicId = inferTopicFromSuggestion(topicText);
+    if (topicId) setSubject(topicId);
+    goToLanding(false);
+  }, [goToLanding]);
+
+  if (summaryView === "loading") {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[#0f1129] bg-gradient-to-b from-[#0f1129] to-[#1a1440] font-sans">
+        <p className="text-lg text-neutral-300">Generating your session summary...</p>
+        <div className="mt-4 h-1 w-48 overflow-hidden rounded-full bg-white/10">
+          <div className="h-full w-1/3 animate-[shimmer_1.5s_ease-in-out_infinite] rounded-full bg-teal-400/60" />
+        </div>
+      </div>
+    );
+  }
+
+  if (summaryView === "error") {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-[#0f1129] bg-gradient-to-b from-[#0f1129] to-[#1a1440] font-sans">
+        <p className="text-lg text-neutral-300">Session complete! Summary unavailable.</p>
+        <button
+          type="button"
+          onClick={() => goToLanding(true)}
+          className="rounded-full bg-[#00d4c8] px-6 py-3 font-medium text-[#0f1129] transition hover:bg-[#22d3ee]"
+        >
+          Start New Session
+        </button>
+      </div>
+    );
+  }
+
+  if (summaryView === "summary" && summaryData) {
+    return (
+      <SessionSummary
+        data={summaryData}
+        onStudyAgain={() => goToLanding(false)}
+        onNewTopic={() => goToLanding(true)}
+        onSuggestedTopicClick={handleSuggestedTopicClick}
+      />
+    );
+  }
 
   if (!inSession) {
     return (
