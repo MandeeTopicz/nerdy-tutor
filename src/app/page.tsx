@@ -31,25 +31,30 @@ const CONCEPTS = [
   {
     id: "fractions",
     title: "Fractions",
-    grade: "6th grade",
     icon: Calculator,
     theme: "teal" as const,
   },
   {
     id: "cell-mitosis",
     title: "Cell Mitosis",
-    grade: "9th grade",
     icon: Microscope,
     theme: "purple" as const,
   },
   {
     id: "photosynthesis",
     title: "Photosynthesis",
-    grade: "7th grade",
     icon: Leaf,
     theme: "green" as const,
   },
 ];
+
+const GRADES = [6, 7, 8, 9, 10, 11, 12] as const;
+function gradeToLabel(g: number) {
+  const ordinals: Record<number, string> = {
+    6: "6th", 7: "7th", 8: "8th", 9: "9th", 10: "10th", 11: "11th", 12: "12th",
+  };
+  return ordinals[g] ?? `${g}th`;
+}
 
 const CARD_THEMES = {
   teal: {
@@ -85,19 +90,19 @@ const PARTNERS = ["Deepgram", "Groq", "Cartesia", "Simli"];
 const LANDING_BG = "bg-[#0f1129]";
 const LANDING_GRADIENT = "bg-gradient-to-b from-[#0f1129] to-[#1a1440]";
 
-const GRADE_OPTIONS = ["6th", "8th", "10th"] as const;
+const DEFAULT_GRADE = "8th";
 
 function Landing({
-  grade,
-  setGrade,
   subject,
   setSubject,
+  grade,
+  setGrade,
   onStartSession,
 }: {
-  grade: string;
-  setGrade: (g: string) => void;
   subject: string | null;
   setSubject: (s: string) => void;
+  grade: string | null;
+  setGrade: (g: string) => void;
   onStartSession: () => void;
 }) {
   return (
@@ -125,7 +130,7 @@ function Landing({
         </section>
 
         <p className="text-neutral-400 text-sm text-center mb-3">Choose a topic to explore</p>
-        <section className="mb-12 grid w-full max-w-3xl gap-4 sm:grid-cols-3">
+        <section className="mb-10 grid w-full max-w-3xl gap-4 sm:grid-cols-3">
           {CONCEPTS.map((concept) => {
             const Icon = concept.icon;
             const t = CARD_THEMES[concept.theme];
@@ -148,29 +153,32 @@ function Landing({
                   <Icon className={t.icon} size={20} />
                 </div>
                 <h3 className="font-semibold text-white">{concept.title}</h3>
-                <p className="text-sm text-neutral-400">{concept.grade}</p>
               </button>
             );
           })}
         </section>
 
-        <p className="text-neutral-400 text-sm text-center mb-3">Select your grade level</p>
-        <div className="mb-6 flex flex-wrap items-center justify-center gap-2">
-          {GRADE_OPTIONS.map((g) => (
-            <button
-              key={g}
-              type="button"
-              onClick={() => setGrade(g)}
-              className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
-                grade === g
-                  ? "border-teal-400/40 bg-teal-400/20 text-teal-300"
-                  : "border-white/10 bg-white/5 text-neutral-300 hover:bg-white/10"
-              }`}
-            >
-              {g} Grade
-            </button>
-          ))}
-        </div>
+        <p className="text-neutral-400 text-sm text-center mb-2">What grade are you in?</p>
+        <section className="mb-10 flex flex-wrap items-center justify-center gap-2">
+          {GRADES.map((g) => {
+            const label = gradeToLabel(g);
+            const isSelected = grade === label;
+            return (
+              <button
+                key={g}
+                type="button"
+                onClick={() => setGrade(label)}
+                className={`min-w-[2.5rem] rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                  isSelected
+                    ? "border-teal-400 bg-teal-400/20 text-teal-300"
+                    : "border-white/10 bg-white/5 text-neutral-300 hover:border-white/20 hover:bg-white/10"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </section>
 
         <div className="mb-10 flex flex-wrap items-center justify-center gap-8 text-sm text-neutral-400">
           {STATS.map((stat) => (
@@ -181,7 +189,7 @@ function Landing({
         <button
           type="button"
           onClick={onStartSession}
-          disabled={!subject}
+          disabled={!subject || !grade}
           className="rounded-full bg-[#00d4c8] px-8 py-3.5 font-semibold text-[#0f1129] shadow-lg transition hover:bg-[#22d3ee] hover:shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Start Session →
@@ -198,8 +206,8 @@ function Landing({
 
 export default function Home() {
   const [inSession, setInSession] = useState(false);
-  const [grade, setGrade] = useState<string>("8th");
   const [subject, setSubject] = useState<string | null>("fractions");
+  const [grade, setGrade] = useState<string | null>(null);
   const [summary, setSummary] = useState<{
     grade: string;
     subject: string;
@@ -210,7 +218,7 @@ export default function Home() {
   const handleEnd = (messages?: TranscriptMessage[], meta?: SessionEndMeta) => {
     if (subject && messages !== undefined) {
       setSummary({
-        grade,
+        grade: grade ?? DEFAULT_GRADE,
         subject: CONCEPTS.find((c) => c.id === subject)?.title ?? subject,
         messages: messages ?? [],
         meta,
@@ -235,10 +243,10 @@ export default function Home() {
   if (!inSession) {
     return (
       <Landing
-        grade={grade}
-        setGrade={setGrade}
         subject={subject}
         setSubject={(s) => setSubject(s)}
+        grade={grade}
+        setGrade={(g) => setGrade(g)}
         onStartSession={() => setInSession(true)}
       />
     );
@@ -247,7 +255,7 @@ export default function Home() {
   return (
     <TutorRoom
       autoConnect
-      grade={grade}
+      grade={grade ?? DEFAULT_GRADE}
       subject={subject ?? "fractions"}
       onEnd={(msgs, meta) => handleEnd(msgs, meta)}
     />
