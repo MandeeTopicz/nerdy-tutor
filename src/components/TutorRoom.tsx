@@ -36,18 +36,60 @@ function UnmutedVideoTrack({
   className?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [needsInteraction, setNeedsInteraction] = useState(false);
+
   const unmute = useCallback(() => {
     const el = containerRef.current?.querySelector("video");
-    if (el) el.muted = false;
+    if (!el) return;
+    el.muted = false;
+    // Check if browser actually allowed unmuting
+    if (el.muted) {
+      setNeedsInteraction(true);
+    } else {
+      setNeedsInteraction(false);
+    }
   }, []);
+
+  const handleUserUnmute = useCallback(() => {
+    const el = containerRef.current?.querySelector("video");
+    if (el) {
+      el.muted = false;
+      el.play().catch(() => {});
+      setNeedsInteraction(false);
+    }
+  }, []);
+
   useEffect(() => {
     unmute();
-    const t = setTimeout(unmute, 200);
+    const t = setTimeout(unmute, 500);
     return () => clearTimeout(t);
   }, [trackRef, unmute]);
+
+  // Observe for the video element being added/replaced in the DOM
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new MutationObserver(() => unmute());
+    observer.observe(container, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [unmute]);
+
   return (
-    <div ref={containerRef} className={className}>
+    <div ref={containerRef} className={`relative ${className ?? ""}`}>
       <VideoTrack trackRef={trackRef} className="h-full w-full object-cover" />
+      {needsInteraction && (
+        <button
+          type="button"
+          onClick={handleUserUnmute}
+          className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-2 bg-black/70 px-4 py-3 text-sm font-medium text-amber-300 backdrop-blur-sm transition hover:bg-black/80"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+            <path d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0 001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276 2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 01-1.06-1.06 8.25 8.25 0 000-11.668.75.75 0 010-1.06z" />
+            <path d="M15.932 7.757a.75.75 0 011.061 0 6 6 0 010 8.486.75.75 0 01-1.06-1.061 4.5 4.5 0 000-6.364.75.75 0 010-1.06z" />
+          </svg>
+          Tap to enable avatar audio
+        </button>
+      )}
     </div>
   );
 }
@@ -192,34 +234,29 @@ function useTranscriptMessages(): TranscriptMessage[] {
 }
 
 /**
- * Wraps useTranscriptMessages so new Tutor lines are held back until the agent
- * is actually speaking (audio/avatar playing). User lines pass through immediately.
- * This keeps the transcript in sync with what the student hears.
+ * Wraps useTranscriptMessages so new Tutor lines only appear once the agent
+ * has started speaking (so text stays in sync with audio). User lines pass
+ * through immediately. Uses a ref to track the last-released index so that
+ * updates to existing segment text (e.g. interim → final) are always visible.
  */
 function useSyncedTranscriptMessages(agentState: string): TranscriptMessage[] {
   const raw = useTranscriptMessages();
-  const [visible, setVisible] = useState<TranscriptMessage[]>([]);
-  const releasedCountRef = useRef(0);
+  const releasedIdxRef = useRef(0);
 
-  useEffect(() => {
-    // When agent is speaking (or has finished), release all tutor messages received so far
-    if (agentState === "speaking" || agentState === "listening") {
-      if (raw.length > releasedCountRef.current) {
-        releasedCountRef.current = raw.length;
-        setVisible([...raw]);
-      }
-    } else {
-      // While thinking/processing, only show user messages and previously released messages
-      const newUserOnly = raw.filter((m, i) => i >= releasedCountRef.current && m.role === "You");
-      if (newUserOnly.length > 0) {
-        // Release user messages immediately
-        releasedCountRef.current = raw.length;
-        setVisible([...raw]);
-      }
+  // Release tutor messages once agent is speaking or listening (finished speaking)
+  if (agentState === "speaking" || agentState === "listening") {
+    releasedIdxRef.current = raw.length;
+  } else {
+    // While thinking, release any trailing user messages immediately
+    while (
+      releasedIdxRef.current < raw.length &&
+      raw[releasedIdxRef.current].role === "You"
+    ) {
+      releasedIdxRef.current++;
     }
-  }, [raw, agentState]);
+  }
 
-  return visible;
+  return raw.slice(0, releasedIdxRef.current);
 }
 
 function LiveTranscriptPanel({
@@ -422,8 +459,9 @@ function TutorRoomInner({
             {videoTrack ? (
               <UnmutedVideoTrack trackRef={videoTrack} className="h-full w-full object-cover" />
             ) : (
-              <div className="flex h-full w-full items-center justify-center bg-white/5 text-neutral-400 text-sm">
-                {""}
+              <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-white/5">
+                <div className="h-8 w-8 animate-spin rounded-full border-2 border-teal-400/30 border-t-teal-400" />
+                <p className="text-sm text-neutral-400">Loading avatar…</p>
               </div>
             )}
           </div>

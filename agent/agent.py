@@ -28,21 +28,32 @@ from livekit.plugins import deepgram, openai, cartesia, silero, simli
 logger = logging.getLogger("tutor-agent")
 logger.setLevel(logging.DEBUG)
 
-def _build_socratic_prompt(subject: str, grade: str) -> str:
-    return f"""You are NerdyTutor, an AI tutor teaching {subject} at a {grade} grade level using the Socratic method.
-You NEVER give direct answers — every response must end with a question.
-Never repeat back what the student just said. Respond only to the meaning/content of what they said.
-When a student is wrong, ask a question that reveals the error without saying "wrong".
-When a student is right, ask them to explain why.
-When a student is stuck, ask a simpler bridging question.
-Keep responses to 2-3 sentences maximum plus one question."""
+# Session state: intro (no STT response) → capture name → capture topic → tutoring
+INTRODUCING = "INTRODUCING"
+CAPTURING_NAME = "CAPTURING_NAME"
+CAPTURING_TOPIC = "CAPTURING_TOPIC"
+TUTORING = "TUTORING"
+
+INTRO_TEXT = (
+    "Hi! I'm Nerd, your AI tutor. I'm here to help you learn anything you're curious about. What's your name?"
+)
+
+
+def _build_socratic_prompt(subject: str, grade: str, student_name: str = "Student") -> str:
+    return f"""You are NerdyTutor, an AI tutor. The student's name is {student_name}. Teach {subject} at a {grade} grade level.
+
+Use the Socratic method: ask guiding questions; do not just give answers. Every response should end with a question when appropriate.
+Keep responses to 2-4 sentences maximum per turn. Use age-appropriate language (middle school level unless the student indicates otherwise).
+Be accuracy-first: correct misconceptions directly and clearly. Answer what was asked, then check in—no unsolicited information.
+Never repeat back what the student just said. When they're wrong, ask a question that reveals the error; when they're right, ask them to explain why. When they're stuck, ask a simpler bridging question."""
+
 
 def _build_greeting(subject: str) -> str:
     return f"Hi! I'm your tutor today. We're learning about {subject}. What would you like to explore first?"
 
 
 # Module-level constants for tests and reuse (default subject/grade)
-SOCRATIC_PROMPT = _build_socratic_prompt("fractions", "8th")
+SOCRATIC_PROMPT = _build_socratic_prompt("fractions", "8th", "Student")
 GREETING = _build_greeting("fractions")
 
 
@@ -58,8 +69,19 @@ async def entrypoint(ctx: JobContext):
     subject = metadata.get("subject", "fractions")
     logger.info("Room metadata: grade=%s subject=%s", grade, subject)
 
-    system_prompt = _build_socratic_prompt(subject, grade)
-    greeting = _build_greeting(subject)
+    session_state_ref = [INTRODUCING]
+    student_name_ref = [None]  # str | None, set when we capture name
+    subject_ref = [subject]  # may be updated from student's topic choice
+
+    intro_silent_instructions = (
+        "You are Nerd in setup mode. The introduction is playing. Do not respond to user input. Say nothing."
+    )
+    name_capture_instructions = (
+        "Whatever the user just said is their name. Respond with exactly: Great to meet you, [use the exact name they said]! What subject or topic would you like to work on today?"
+    )
+    topic_capture_instructions = (
+        "The user will tell you what subject or topic they want. Acknowledge in one short sentence and say you're ready to start. One sentence only."
+    )
 
     # Deepgram STT — Nova-3 for lower latency; endpointing_ms=200 avoids re-buffering
     stt = deepgram.STT(
@@ -99,10 +121,10 @@ async def entrypoint(ctx: JobContext):
         llm=llm,
         tts=tts,
         turn_detection="vad",
-        allow_interruptions=False,  # Students wait for tutor to finish
+        allow_interruptions=True,   # Let students interrupt — avoids buffering speech and inflating STT latency
         aec_warmup_duration=None,
-        min_endpointing_delay=0.0,
-        max_endpointing_delay=0.8,  # was 3.0 — 3s was way too long
+        min_endpointing_delay=0.5,  # wait at least 500ms of silence before committing
+        max_endpointing_delay=1.5,  # allow up to 1.5s for mid-sentence pauses
         preemptive_generation=True,
         user_away_timeout=None,  # we handle inactivity ourselves in inactivity_monitor (20s check-in, ~45s close)
     )
@@ -150,8 +172,8 @@ async def entrypoint(ctx: JobContext):
 
     session.on("metrics_collected", on_metrics)
 
-    greeting_sent = [False]  # ref so closure can mutate
-    greeting_done = [False]  # True when agent has finished speaking the greeting
+    intro_sent = [False]  # True after we sent INTRO_TEXT
+    greeting_done = [False]  # True when intro has finished playing
     second_30s_after_check_in = [False]  # True after we said "are you still there?"; next 30s = close
 
     async def say_and_wait(text: str, timeout: float = 15.0):
@@ -186,39 +208,46 @@ async def entrypoint(ctx: JobContext):
             logger.info("[TTS] speaking started")
         elif old_state == "speaking" and new_state == "listening":
             logger.info("[Playback] finished, now listening")
-            # Reset inactivity clock — 30s check-in / 60s close count only after agent has asked and is waiting
             last_student_response_time[0] = time.time()
+            if session_state_ref[0] == INTRODUCING:
+                session_state_ref[0] = CAPTURING_NAME
+                greeting_done[0] = True
+                logger.info("Intro done — now capturing name")
+                async def _update_name_capture():
+                    try:
+                        await agent.update_instructions(name_capture_instructions)
+                    except Exception as e:
+                        logger.debug("update_instructions name_capture: %s", e)
+                try:
+                    asyncio.get_running_loop().create_task(_update_name_capture())
+                except Exception as e:
+                    logger.exception("Schedule name_capture instructions: %s", e)
+            elif session_state_ref[0] == CAPTURING_NAME:
+                session_state_ref[0] = CAPTURING_TOPIC
+                logger.info("Name response done — now capturing topic")
+                async def _update_topic_capture():
+                    try:
+                        await agent.update_instructions(topic_capture_instructions)
+                    except Exception as e:
+                        logger.debug("update_instructions topic_capture: %s", e)
+                try:
+                    asyncio.get_running_loop().create_task(_update_topic_capture())
+                except Exception as e:
+                    logger.exception("Schedule topic_capture instructions: %s", e)
         if new_state == "listening":
             logger.info("Session started (agent state = listening)")
-        # Greeting just finished: state went from speaking -> listening and we sent the greeting
-        if (
-            old_state == "speaking"
-            and new_state == "listening"
-            and greeting_sent[0]
-        ):
-            greeting_done[0] = True
-            logger.info("Greeting done — now accepting user input")
-        if ev.new_state == "listening" and not greeting_sent[0]:
-            greeting_sent[0] = True
-
-            async def delayed_greeting():
-                await asyncio.sleep(5)  # Give Simli more time to fully connect
-                try:
-                    session.say(greeting)
-                    logger.info("Greeting sent via session.say(GREETING)")
-                    await asyncio.sleep(1)  # Brief pause before session starts listening
-                except RuntimeError as e:
-                    if "AgentSession isn't running" in str(e) or "AgentSession is closing" in str(e):
-                        logger.info("Skipping greeting — session no longer running")
-                    else:
-                        raise
-                except Exception as e:
-                    logger.error("Failed to say greeting: %s", e)
-
+        if new_state == "listening" and not intro_sent[0]:
+            intro_sent[0] = True
             try:
-                asyncio.get_running_loop().create_task(delayed_greeting())
+                session.say(INTRO_TEXT)
+                logger.info("Intro sent via session.say(INTRO_TEXT)")
+            except RuntimeError as e:
+                if "AgentSession isn't running" in str(e) or "AgentSession is closing" in str(e):
+                    logger.info("Skipping intro — session no longer running")
+                else:
+                    raise
             except Exception as e:
-                logger.exception("Failed to schedule greeting: %s", e)
+                logger.error("Failed to say intro: %s", e)
 
     session.on("agent_state_changed", on_agent_state_changed)
 
@@ -234,7 +263,7 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.debug("send_ui_update: %s", e)
 
-    current_topic = subject
+    current_topic = subject_ref[0]
     TOPIC_KEYWORDS = {
         "fractions": ["fraction", "numerator", "denominator"],
         "cell-mitosis": ["mitosis", "cell", "division", "prophase", "metaphase"],
@@ -248,12 +277,8 @@ async def entrypoint(ctx: JobContext):
             if payload.get("type") == "hint_request":
                 async def handle_hint():
                     try:
-                        session.say(
-                            "Here's a nudge in the right direction — without giving it away:",
-                            add_to_chat_ctx=True,
-                        )
                         session.generate_reply(
-                            instructions="Give a single Socratic hint question that nudges without revealing the answer. Keep it to one sentence."
+                            instructions="The student asked for a hint. Give a single short Socratic hint that nudges them toward the answer without revealing it. Start naturally, do not say 'here is a hint'."
                         )
                     except RuntimeError as e:
                         if "isn't running" not in str(e) and "is closing" not in str(e):
@@ -269,10 +294,14 @@ async def entrypoint(ctx: JobContext):
         for topic, keywords in TOPIC_KEYWORDS.items():
             if topic != current_topic and any(k in t for k in keywords):
                 current_topic = topic
+                subject_ref[0] = topic
                 display = topic.replace("-", " ")
                 display = display.title()
                 async def do_switch():
                     try:
+                        await agent.update_instructions(
+                            _build_socratic_prompt(topic, grade, student_name_ref[0] or "Student")
+                        )
                         session.generate_reply(
                             instructions=f"The student wants to switch to {display}. Acknowledge the switch warmly and ask your first Socratic question about {display} at {grade} grade level."
                         )
@@ -285,9 +314,31 @@ async def entrypoint(ctx: JobContext):
                 break
 
     def _original_on_user_transcribed(ev):
+        nonlocal current_topic
+        transcript = (getattr(ev, "transcript", "") or "").strip()
+        is_final = getattr(ev, "is_final", False)
+        state = session_state_ref[0]
+        if state == CAPTURING_NAME and is_final and transcript and student_name_ref[0] is None:
+            student_name_ref[0] = transcript
+            logger.info("Captured student name: %s", student_name_ref[0])
+        elif state == CAPTURING_TOPIC and is_final and transcript:
+            subject_ref[0] = transcript
+            session_state_ref[0] = TUTORING
+            current_topic = subject_ref[0]
+            logger.info("Captured topic, starting tutoring: subject=%s", subject_ref[0])
+            async def _switch_to_tutoring():
+                try:
+                    await agent.update_instructions(
+                        _build_socratic_prompt(subject_ref[0], grade, student_name_ref[0] or "Student")
+                    )
+                except Exception as e:
+                    logger.debug("update_instructions tutoring: %s", e)
+            try:
+                asyncio.get_running_loop().create_task(_switch_to_tutoring())
+            except Exception as e:
+                logger.exception("Schedule tutoring instructions: %s", e)
         on_user_transcribed(ev)
-        transcript = getattr(ev, "transcript", "") or ""
-        if transcript:
+        if transcript and state == TUTORING:
             _check_topic_switch(transcript)
 
     try:
@@ -300,8 +351,7 @@ async def entrypoint(ctx: JobContext):
         old_state = getattr(ev, "old_state", None)
         new_state = ev.new_state
         if old_state == "speaking" and new_state == "listening":
-            # Only send score after student has spoken — avoid jumping to 4 on greeting
-            if student_ever_responded[0]:
+            if session_state_ref[0] == TUTORING and student_ever_responded[0]:
                 try:
                     asyncio.get_running_loop().create_task(
                         send_ui_update(ctx.room, score=4)
@@ -330,8 +380,8 @@ async def entrypoint(ctx: JobContext):
             second_30s_after_check_in[0] = False
 
     _closing_message = (
-        "No worries! It looks like you might have stepped away. "
-        "Great work today — come back anytime to keep learning. Goodbye!"
+        "No worries, it looks like you stepped away. "
+        "Great work today. Come back anytime to keep learning. Bye for now."
     )
 
     async def inactivity_monitor():
@@ -374,7 +424,7 @@ async def entrypoint(ctx: JobContext):
                     logger.info("[Timeout] No response for 20s, sending check-in")
                     try:
                         await say_and_wait(
-                            "Hey, are you still there? Would you like me to repeat the question?",
+                            "I haven't heard from you in a bit. Take your time, or let me know if you want a hint.",
                             timeout=12.0,
                         )
                     except RuntimeError as e:
@@ -384,12 +434,7 @@ async def entrypoint(ctx: JobContext):
                     last_student_response_time[0] = time.time()
 
     agent = Agent(
-        instructions=system_prompt,
-        stt=stt,
-        llm=llm,
-        tts=tts,
-        vad=vad,
-        allow_interruptions=False,  # Background noise should not interrupt tutor
+        instructions=intro_silent_instructions,
     )
 
     # Simli avatar — native LiveKit plugin; publishes video (and audio) to the room
@@ -419,7 +464,7 @@ def prewarm(proc):
     """Preload VAD for faster startup — tightened for lower latency."""
     proc.userdata["vad"] = silero.VAD.load(
         min_speech_duration=0.05,     # was 0.1
-        min_silence_duration=0.2,     # was 0.3 — cut off silence faster
+        min_silence_duration=0.4,     # 400ms silence needed to mark end of speech segment
         prefix_padding_duration=0.1,  # was 0.2
         activation_threshold=0.6,     # was 0.55
     )
