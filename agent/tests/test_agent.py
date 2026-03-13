@@ -149,7 +149,7 @@ async def test_entrypoint_stt_config_deepgram_nova2_interim_endpointing(mock_ctx
     kwargs = mock_dg.STT.call_args[1]
     assert kwargs.get("model") == "nova-3"
     assert kwargs.get("interim_results") is True
-    assert kwargs.get("endpointing_ms") == 200
+    assert kwargs.get("endpointing_ms") == 300
 
 
 @pytest.mark.asyncio

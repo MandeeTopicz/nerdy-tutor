@@ -274,19 +274,21 @@ async def entrypoint(ctx: JobContext):
         "Respond briefly based on their answer and confirm we're starting."
     )
 
-    # Deepgram STT — Nova-3 for lower latency; endpointing_ms=200 avoids re-buffering
+    # Deepgram STT — Nova-3 optimized for latency (target <150ms, max <300ms).
+    # endpointing_ms=300; vad_events=True. (utterance_end_ms not exposed by LiveKit Deepgram plugin.)
     stt = deepgram.STT(
         model="nova-3",
         language="en",
         interim_results=True,
-        endpointing_ms=200,  # was 50 — too-short endpointing causes re-buffering
+        endpointing_ms=300,
         punctuate=False,
         smart_format=False,  # disable — adds latency
         no_delay=True,       # request lowest latency mode
+        vad_events=True,
     )
 
-    # LLM: Groq Llama-3.3-70b (OpenAI-compatible API)
-    # Base URL and model per Groq docs: https://console.groq.com/docs/openai
+    # LLM: Groq Llama-3.3-70b (OpenAI-compatible API). Output streams token-by-token to TTS
+    # via livekit-agents pipeline (no full-response buffering).
     groq_base_url = "https://api.groq.com/openai/v1"
     groq_model = "llama-3.3-70b-versatile"
     llm = openai.LLM(
@@ -296,7 +298,8 @@ async def entrypoint(ctx: JobContext):
     )
     logger.info("LLM configured: base_url=%s model=%s", groq_base_url, groq_model)
 
-    # TTS: Cartesia Sonic 3 streaming — 16kHz to match Simli's native rate (avoids resampling)
+    # TTS: Cartesia Sonic 3 streaming — receives streamed tokens from LLM in real time (no sentence
+    # buffering; pipeline uses AsyncIterable[str] from LLM -> TTS). 16kHz to match Simli's native rate.
     tts = cartesia.TTS(
         model="sonic-3",
         voice="79a125e8-cd45-4c13-8a67-188112f4dd22",  # friendly voice
@@ -320,8 +323,11 @@ async def entrypoint(ctx: JobContext):
         user_away_timeout=None,  # we handle inactivity ourselves in inactivity_monitor (20s check-in, ~45s close)
     )
 
-    # Log metrics when collected — metrics come as EOUMetrics, STTMetrics, LLMMetrics, TTSMetrics
-    # EOUMetrics: transcription_delay | LLMMetrics: ttft | TTSMetrics: ttfb | STTMetrics: duration
+    # Pipeline stage instrumentation: baseline = speech_end_detected (0ms); log ms since then per stage
+    latency_t0_ref = [None]  # time when user stopped speaking (baseline for this turn)
+    latency_stt_ms_ref = [None]  # transcription_delay in ms (from EOU)
+    latency_llm_ttft_ref = [None]  # LLM time-to-first-token in sec (for tts_first_chunk calc)
+
     def on_metrics(ev):
         try:
             ts = time.time()
@@ -330,9 +336,17 @@ async def entrypoint(ctx: JobContext):
                 return
             if hasattr(m, "type") and m.type == "eou_metrics":
                 eou = m
+                # Baseline for this turn: speech end time
+                latency_t0_ref[0] = ts - eou.end_of_utterance_delay - eou.transcription_delay
+                stt_ms = eou.transcription_delay * 1000
+                latency_stt_ms_ref[0] = stt_ms
+                latency_llm_ttft_ref[0] = None
+                logger.info("[LATENCY] speech_end_detected 0ms (baseline)")
+                logger.info("[LATENCY] stt_transcript_received %.0fms", stt_ms)
                 logger.info(
-                    f"[EOU] end_of_utterance_delay={eou.end_of_utterance_delay*1000:.0f}ms | "
-                    f"transcription_delay={eou.transcription_delay*1000:.0f}ms"
+                    "[EOU] end_of_utterance_delay=%.0fms | transcription_delay=%.0fms",
+                    eou.end_of_utterance_delay * 1000,
+                    eou.transcription_delay * 1000,
                 )
                 return
             d = getattr(m, "model_dump", None) or getattr(m, "dict", lambda: {})()
@@ -342,10 +356,18 @@ async def entrypoint(ctx: JobContext):
                 audio_dur = getattr(m, "audio_duration", None)
                 if audio_dur is not None:
                     logger.info("[STT] audio_duration=%s (user speech length)", f"{audio_dur * 1000:.0f}ms")
-            # Extract from various metric types
-            stt_val = d.get("transcription_delay") or d.get("duration")  # EOUMetrics or STTMetrics
             llm_ttft = d.get("llm_node_ttft") or d.get("ttft")  # assistant or LLMMetrics
             tts_ttfb = d.get("tts_node_ttfb") or d.get("ttfb")  # assistant or TTSMetrics
+            if llm_ttft is not None and latency_t0_ref[0] is not None and latency_stt_ms_ref[0] is not None:
+                latency_llm_ttft_ref[0] = llm_ttft
+                elapsed_ms = latency_stt_ms_ref[0] + llm_ttft * 1000
+                logger.info("[LATENCY] llm_first_token %.0fms", elapsed_ms)
+            if tts_ttfb is not None and latency_t0_ref[0] is not None and latency_stt_ms_ref[0] is not None:
+                stt_sec = latency_stt_ms_ref[0] / 1000.0
+                llm_sec = (latency_llm_ttft_ref[0] or 0.0)
+                elapsed_ms = (stt_sec + llm_sec + tts_ttfb) * 1000
+                logger.info("[LATENCY] tts_first_chunk %.0fms", elapsed_ms)
+            stt_val = d.get("transcription_delay") or d.get("duration")
             e2e = d.get("e2e_latency")
             parts = [f"t={ts:.3f}"]
             if stt_val is not None:
@@ -396,6 +418,9 @@ async def entrypoint(ctx: JobContext):
         if new_state == "thinking":
             logger.info("[LLM] generating response...")
         elif new_state == "speaking":
+            if latency_t0_ref[0] is not None:
+                elapsed_ms = (time.time() - latency_t0_ref[0]) * 1000
+                logger.info("[LATENCY] avatar_audio_start %.0fms", elapsed_ms)
             logger.info("[TTS] speaking started")
         elif old_state == "speaking" and new_state == "listening":
             logger.info("[Playback] finished, now listening")
