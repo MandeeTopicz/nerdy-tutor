@@ -1,20 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import dynamic from "next/dynamic";
-import type { SessionEndMeta } from "@/components/TutorRoom";
 import { Calculator, Leaf, Microscope } from "lucide-react";
-
-type SessionSummaryData = {
-  topic: string;
-  grade: string;
-  whatWasLearned: string[];
-  strongPoints: string[];
-  areasForImprovement: string[];
-  encouragement: string;
-  timedOut?: boolean;
-  noResponse?: boolean;
-};
 
 const TutorRoom = dynamic(() => import("@/components/TutorRoom"), {
   ssr: false,
@@ -24,8 +12,6 @@ const TutorRoom = dynamic(() => import("@/components/TutorRoom"), {
     </div>
   ),
 });
-
-type TranscriptMessage = { role: "You" | "Tutor"; text: string };
 
 const CONCEPTS = [
   {
@@ -208,37 +194,10 @@ export default function Home() {
   const [inSession, setInSession] = useState(false);
   const [subject, setSubject] = useState<string | null>("fractions");
   const [grade, setGrade] = useState<string | null>(null);
-  const [summary, setSummary] = useState<{
-    grade: string;
-    subject: string;
-    messages: TranscriptMessage[];
-    meta?: SessionEndMeta;
-  } | null>(null);
 
-  const handleEnd = (messages?: TranscriptMessage[], meta?: SessionEndMeta) => {
-    if (subject && messages !== undefined) {
-      setSummary({
-        grade: grade ?? DEFAULT_GRADE,
-        subject: CONCEPTS.find((c) => c.id === subject)?.title ?? subject,
-        messages: messages ?? [],
-        meta,
-      });
-    }
+  const handleEnd = () => {
     setInSession(false);
   };
-
-  if (summary) {
-    return (
-      <SessionSummary
-        grade={summary.grade}
-        subject={summary.subject}
-        messages={summary.messages}
-        meta={summary.meta}
-        onStartNew={() => setSummary(null)}
-        onBackToHome={() => setSummary(null)}
-      />
-    );
-  }
 
   if (!inSession) {
     return (
@@ -257,188 +216,7 @@ export default function Home() {
       autoConnect
       grade={grade ?? DEFAULT_GRADE}
       subject={subject ?? "fractions"}
-      onEnd={(msgs, meta) => handleEnd(msgs, meta)}
+      onEnd={handleEnd}
     />
-  );
-}
-
-function SessionSummary({
-  grade,
-  subject,
-  messages,
-  meta,
-  onStartNew,
-  onBackToHome,
-}: {
-  grade: string;
-  subject: string;
-  messages: TranscriptMessage[];
-  meta?: SessionEndMeta;
-  onStartNew: () => void;
-  onBackToHome: () => void;
-}) {
-  const [data, setData] = useState<SessionSummaryData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/session-summary", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages,
-            subject,
-            grade,
-            timedOut: meta?.timedOut,
-            noResponse: Boolean(meta?.timedOut && meta?.everResponded === false),
-          }),
-        });
-        if (cancelled) return;
-        if (!res.ok) throw new Error("Failed to generate summary");
-        const parsed = (await res.json()) as SessionSummaryData;
-        setData(parsed);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Something went wrong");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [messages, subject, grade, meta]);
-
-  return (
-    <div
-      className="flex min-h-screen flex-col items-center justify-center bg-[#0f1129] bg-gradient-to-b from-[#0f1129] to-[#1a1440] px-8 py-12 font-sans"
-      style={{ animation: "fadeIn 0.3s ease-out" }}
-    >
-      <style>{`@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }`}</style>
-      <div className="mx-auto w-full max-w-2xl px-8 py-12">
-        {loading ? (
-          <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-white/10 bg-white/5 px-8 py-16 backdrop-blur-sm">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-teal-400/40 border-t-teal-400" />
-            <p className="text-neutral-400">Generating your session summary...</p>
-          </div>
-        ) : error ? (
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur-sm">
-            <div className="mb-6 flex flex-col items-center justify-center gap-3 text-center">
-              <span className="text-4xl text-amber-400">⚠</span>
-              <h2 className="bg-gradient-to-r from-[#f97316] via-[#ec4899] to-[#22d3ee] bg-clip-text text-2xl font-bold tracking-tight text-transparent">
-                Session Ended
-              </h2>
-              <p className="max-w-md text-neutral-300">
-                The session ended unexpectedly. You can try again whenever you&apos;re ready.
-              </p>
-            </div>
-            <div className="flex justify-center">
-              <button
-                type="button"
-                onClick={onStartNew}
-                className="rounded-full bg-[#00d4c8] px-8 py-3 font-semibold text-[#0f1129] transition hover:bg-[#22d3ee]"
-              >
-                Try Again
-              </button>
-            </div>
-          </div>
-        ) : data?.timedOut && data?.noResponse ? (
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur-sm">
-            <div className="mb-6 flex flex-col items-center justify-center gap-3 text-center">
-              <span className="text-4xl text-amber-400">⚠</span>
-              <h2 className="bg-gradient-to-r from-[#f97316] via-[#ec4899] to-[#22d3ee] bg-clip-text text-2xl font-bold tracking-tight text-transparent">
-                Session Timed Out
-              </h2>
-              <p className="max-w-md text-neutral-300">
-                We didn&apos;t receive a response during this session. This can happen if your microphone wasn&apos;t picked up or the connection dropped.
-              </p>
-            </div>
-            <div className="flex justify-center">
-              <button
-                type="button"
-                onClick={onStartNew}
-                className="rounded-full bg-[#00d4c8] px-8 py-3 font-semibold text-[#0f1129] transition hover:bg-[#22d3ee]"
-              >
-                Try Again
-              </button>
-            </div>
-          </div>
-        ) : data ? (
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur-sm">
-            {data.timedOut && !data.noResponse && (
-              <div className="mb-6 rounded-xl border border-yellow-400/20 bg-yellow-400/10 p-3 text-sm text-yellow-300">
-                Session ended due to inactivity — here&apos;s a summary of what was covered.
-              </div>
-            )}
-            <div className="mb-6 flex items-center justify-center gap-3">
-              <span className="text-4xl text-green-400">✓</span>
-              <h2 className="bg-gradient-to-r from-[#f97316] via-[#ec4899] to-[#22d3ee] bg-clip-text text-2xl font-bold tracking-tight text-transparent">
-                Session Complete
-              </h2>
-            </div>
-            <div className="mb-8 flex flex-wrap justify-center gap-2">
-              <span className="rounded-full bg-teal-400/10 px-3 py-1 text-sm text-teal-300">
-                {data.topic}
-              </span>
-              <span className="rounded-full bg-white/10 px-3 py-1 text-sm text-neutral-300">
-                {data.grade} grade
-              </span>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div className="rounded-xl border border-teal-400/20 bg-teal-400/5 p-4">
-                <h3 className="mb-3 text-sm font-semibold text-teal-300">What You Learned</h3>
-                <ul className="space-y-1.5 text-sm text-neutral-300">
-                  {data.whatWasLearned.map((item, i) => (
-                    <li key={i} className="flex gap-2">
-                      <span className="text-teal-400">•</span>
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div className="rounded-xl border border-green-400/20 bg-green-400/5 p-4">
-                <h3 className="mb-3 text-sm font-semibold text-green-300">Strong Points</h3>
-                <ul className="space-y-1.5 text-sm text-green-300">
-                  {data.strongPoints.map((item, i) => (
-                    <li key={i} className="flex gap-2">
-                      <span>✓</span>
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div className="rounded-xl border border-yellow-400/20 bg-yellow-400/5 p-4">
-                <h3 className="mb-3 text-sm font-semibold text-yellow-300">Areas to Explore More</h3>
-                <ul className="space-y-1.5 text-sm text-yellow-300">
-                  {data.areasForImprovement.map((item, i) => (
-                    <li key={i} className="flex gap-2">
-                      <span>→</span>
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-
-            <blockquote className="mt-6 border-t border-white/10 pt-6 text-center text-lg italic text-neutral-300">
-              {data.encouragement}
-            </blockquote>
-
-            <div className="mt-8 flex flex-wrap justify-center gap-4">
-              <button
-                type="button"
-                onClick={onBackToHome}
-                className="rounded-full border border-white/20 px-6 py-3 font-medium text-neutral-300 transition hover:bg-white/5"
-              >
-                Back to Home
-              </button>
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
   );
 }

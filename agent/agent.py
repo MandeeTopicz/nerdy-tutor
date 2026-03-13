@@ -244,6 +244,9 @@ async def entrypoint(ctx: JobContext):
     metadata = json.loads(ctx.room.metadata or "{}")
     grade = metadata.get("grade", "8th")
     subject = metadata.get("subject", "fractions")
+    print(f"[DEBUG] room metadata: {metadata}")
+    print(f"[DEBUG] grade from metadata: {grade}")
+    print(f"[DEBUG] subject from metadata: {subject}")
     logger.info("Room metadata: grade=%s subject=%s", grade, subject)
 
     session_state_ref = [INTRODUCING]
