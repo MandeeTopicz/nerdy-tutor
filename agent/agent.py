@@ -16,6 +16,7 @@ load_dotenv(dotenv_path=_env_path, override=True)
 
 import asyncio
 import logging
+import re
 import time
 from livekit.agents import (
     JobContext,
@@ -28,24 +29,200 @@ from livekit.plugins import deepgram, openai, cartesia, silero, simli
 logger = logging.getLogger("tutor-agent")
 logger.setLevel(logging.DEBUG)
 
-# Session state: intro (no STT response) → capture name → capture topic → tutoring
+# Session state: intro → name → topic → grade → subject (if unclear) → tutoring
 INTRODUCING = "INTRODUCING"
 CAPTURING_NAME = "CAPTURING_NAME"
 CAPTURING_TOPIC = "CAPTURING_TOPIC"
+CAPTURING_GRADE = "CAPTURING_GRADE"
+CAPTURING_SUBJECT = "CAPTURING_SUBJECT"
 TUTORING = "TUTORING"
+
+# Grade keys and subject categories
+GRADE_6, GRADE_7, GRADE_8, GRADE_9, GRADE_10, GRADE_11, GRADE_12 = (
+    "GRADE_6", "GRADE_7", "GRADE_8", "GRADE_9", "GRADE_10", "GRADE_11", "GRADE_12"
+)
+MATH, SCIENCE, ENGLISH = "MATH", "SCIENCE", "ENGLISH"
 
 INTRO_TEXT = (
     "Hi! I'm Nerd, your AI tutor. I'm here to help you learn anything you're curious about. What's your name?"
 )
 
+# Grade-level profiles: general + subject-specific instructions per grade
+GRADE_PROFILES = {
+    GRADE_6: {
+        "general": (
+            "Vocabulary: simple everyday language only; define every new word. "
+            "Concepts: one concept at a time; heavy use of real-world analogies. "
+            "Tone: warm, encouraging, very patient. "
+            "Response length: 2 sentences max before checking in. "
+            "Socratic questions: 'What do you already know about this?', 'Can you describe it in your own words?', 'What does this remind you of?'"
+        ),
+        "math": "Math: whole numbers, fractions, basic ratios — use pizza/money analogies.",
+        "science": "Science: observable phenomena only; no abstract theory.",
+        "english": "English: basic story elements, main idea, simple inference.",
+    },
+    GRADE_7: {
+        "general": (
+            "Vocabulary: introduce simple subject terms with definitions. "
+            "Concepts: up to 2 connected concepts; use comparisons to known ideas. "
+            "Tone: encouraging, slightly more academic. "
+            "Response length: 2-3 sentences before checking in. "
+            "Socratic questions: 'Why do you think that happens?', 'What would change if...?', 'Can you give me an example?'"
+        ),
+        "math": "Math: proportions, basic algebra intro, negative numbers.",
+        "science": "Science: begin cause and effect reasoning.",
+        "english": "English: author's purpose, text structure, basic theme.",
+    },
+    GRADE_8: {
+        "general": (
+            "Vocabulary: use subject-specific terms; define unfamiliar ones inline. "
+            "Concepts: 2-3 connected concepts; introduce simple formulas and notation. "
+            "Tone: academic but approachable. "
+            "Response length: 3 sentences before checking in. "
+            "Socratic questions: \"What's the relationship between these two ideas?\", 'How did you arrive at that?', 'What pattern do you notice?'"
+        ),
+        "math": "Math: linear equations, slope, intro to functions.",
+        "science": "Science: basic scientific method, variables, simple data interpretation.",
+        "english": "English: theme development, character motivation, evidence-based claims.",
+    },
+    GRADE_9: {
+        "general": (
+            "Vocabulary: full subject terminology expected; minimal hand-holding on definitions. "
+            "Concepts: multi-step reasoning; connecting concepts across topics. "
+            "Tone: academic, peer-like. "
+            "Response length: 3-4 sentences before checking in. "
+            "Socratic questions: 'What assumptions are you making?', 'How would you test that?', 'What evidence supports that?'"
+        ),
+        "math": "Math: systems of equations, quadratics intro, geometric proofs.",
+        "science": "Science: hypothesis formation, controlled experiments, basic chemistry/physics concepts.",
+        "english": "English: argumentative analysis, rhetorical devices, textual evidence.",
+    },
+    GRADE_10: {
+        "general": (
+            "Vocabulary: college-prep terminology; no inline definitions unless highly specialized. "
+            "Concepts: abstract reasoning introduced; exceptions and edge cases. "
+            "Tone: academic, intellectually challenging. "
+            "Response length: 3-4 sentences; push student to elaborate before confirming. "
+            "Socratic questions: 'What are the limitations of that approach?', 'Can you think of a counterexample?', 'How does this connect to what you already know?'"
+        ),
+        "math": "Math: advanced algebra, intro to trigonometry, probability.",
+        "science": "Science: molecular biology, chemical reactions, Newtonian physics.",
+        "english": "English: literary theory basics, complex theme analysis, synthesis across texts.",
+    },
+    GRADE_11: {
+        "general": (
+            "Vocabulary: discipline-specific academic language; assumes strong base knowledge. "
+            "Concepts: nuanced, multi-layered reasoning; compare and contrast frameworks. "
+            "Tone: near-collegiate, intellectually rigorous. "
+            "Response length: 4 sentences; expect student to drive reasoning with minimal prompting. "
+            "Socratic questions: \"What's the underlying principle at work here?\", 'How would an expert approach this differently?', 'What would disprove your reasoning?'"
+        ),
+        "math": "Math: pre-calculus, logarithms, complex functions.",
+        "science": "Science: advanced biology/chemistry/physics, data analysis, scientific writing.",
+        "english": "English: rhetorical analysis, research synthesis, AP-level argumentation.",
+    },
+    GRADE_12: {
+        "general": (
+            "Vocabulary: full college-level academic and subject-specific language. "
+            "Concepts: abstract, theoretical, and applied; multi-step problems without scaffolding. "
+            "Tone: collegiate, intellectual peer. "
+            "Response length: 4-5 sentences; student expected to reason independently. "
+            "Socratic questions: \"What's the theoretical basis for that?\", 'How would you defend that position?', 'What are the real-world implications?', 'How would you prove that rigorously?'"
+        ),
+        "math": "Math: calculus concepts, limits, derivatives, intro to proofs.",
+        "science": "Science: research-level reasoning, experimental design, advanced data interpretation.",
+        "english": "English: scholarly analysis, original argumentation, cross-disciplinary synthesis.",
+    },
+}
+
+
+def _parse_grade_from_transcript(transcript: str):
+    """Returns (grade_key or None, invalid: bool, need_middle_school_clarify: bool)."""
+    t = (transcript or "").strip().lower()
+    if not t:
+        return None, False, False
+    if "freshman" in t or "freshmen" in t:
+        return "GRADE_9", False, False
+    if "sophomore" in t:
+        return "GRADE_10", False, False
+    if "junior" in t:
+        return "GRADE_11", False, False
+    if "senior" in t:
+        return "GRADE_12", False, False
+    if "middle school" in t:
+        return None, False, True
+    if "12" in t or "twelve" in t or "12th" in t or "twelfth" in t:
+        return "GRADE_12", False, False
+    if "11" in t or "eleven" in t or "11th" in t or "eleventh" in t:
+        return "GRADE_11", False, False
+    if "10" in t or "ten" in t or "10th" in t or "tenth" in t:
+        return "GRADE_10", False, False
+    if "9" in t or "nine" in t or "9th" in t or "ninth" in t:
+        return "GRADE_9", False, False
+    if "8" in t or "eight" in t or "8th" in t or "eighth" in t:
+        return "GRADE_8", False, False
+    if "7" in t or "seven" in t or "7th" in t or "seventh" in t:
+        return "GRADE_7", False, False
+    if re.search(r"\b6\b", t) or "6th" in t or "six" in t or "sixth" in t:
+        return "GRADE_6", False, False
+    m = re.search(r"\b(\d{1,2})\b", t)
+    if m:
+        num = int(m.group(1))
+        if 6 <= num <= 12:
+            return f"GRADE_{num}", False, False
+        return None, True, False
+    return None, True, False
+
+
+def _detect_subject_from_topic(topic_text: str):
+    """Detect MATH, SCIENCE, or ENGLISH from topic string. Returns subject key or None if unclear."""
+    t = (topic_text or "").lower()
+    if not t:
+        return None
+    math_words = (
+        "math", "maths", "algebra", "geometry", "fraction", "fractions", "equation", "calculus",
+        "number", "numbers", "ratio", "ratios", "percent", "trigonometry", "graph"
+    )
+    science_words = (
+        "science", "biology", "chemistry", "physics", "cell", "mitosis", "photosynthesis",
+        "atom", "molecule", "experiment", "scientific", "earth", "space", "organism"
+    )
+    english_words = (
+        "english", "reading", "writing", "literature", "grammar", "essay", "story", "poem",
+        "author", "theme", "character", "rhetoric", "argument", "comprehension"
+    )
+    math_hits = sum(1 for w in math_words if w in t)
+    science_hits = sum(1 for w in science_words if w in t)
+    english_hits = sum(1 for w in english_words if w in t)
+    if math_hits >= 1 and math_hits >= science_hits and math_hits >= english_hits:
+        return MATH
+    if science_hits >= 1 and science_hits >= math_hits and science_hits >= english_hits:
+        return SCIENCE
+    if english_hits >= 1 and english_hits >= math_hits and english_hits >= science_hits:
+        return ENGLISH
+    return None
+
+
+def _build_tutoring_prompt(student_name: str, grade_key: str, subject: str, topic_text: str) -> str:
+    """Build system prompt from grade profile and subject."""
+    profile = GRADE_PROFILES.get(grade_key, GRADE_PROFILES[GRADE_8])
+    subject_lower = subject.lower() if subject else "math"
+    subject_line = profile.get(subject_lower, profile.get("math", ""))
+    grade_label = grade_key.replace("GRADE_", "") + "th" if grade_key else "8th"
+    return (
+        f"You are a Socratic tutor named Nerd helping {student_name}, a {grade_label} grade student, with {subject}. "
+        f"Their topic is: {topic_text or 'general'}.\n\n"
+        f"{profile['general']}\n\n"
+        f"{subject_line}\n\n"
+        "Always respond in 2-4 sentences max. Never give the answer directly — guide the student "
+        "to discover it. Correct misconceptions immediately and clearly. Do not offer unsolicited "
+        "information. After every response, ask one follow-up question to check understanding."
+    )
+
 
 def _build_socratic_prompt(subject: str, grade: str, student_name: str = "Student") -> str:
-    return f"""You are NerdyTutor, an AI tutor. The student's name is {student_name}. Teach {subject} at a {grade} grade level.
-
-Use the Socratic method: ask guiding questions; do not just give answers. Every response should end with a question when appropriate.
-Keep responses to 2-4 sentences maximum per turn. Use age-appropriate language (middle school level unless the student indicates otherwise).
-Be accuracy-first: correct misconceptions directly and clearly. Answer what was asked, then check in—no unsolicited information.
-Never repeat back what the student just said. When they're wrong, ask a question that reveals the error; when they're right, ask them to explain why. When they're stuck, ask a simpler bridging question."""
+    """Legacy builder for tests; uses generic 8th-grade style."""
+    return _build_tutoring_prompt(student_name, GRADE_8, subject, subject)
 
 
 def _build_greeting(subject: str) -> str:
@@ -70,8 +247,11 @@ async def entrypoint(ctx: JobContext):
     logger.info("Room metadata: grade=%s subject=%s", grade, subject)
 
     session_state_ref = [INTRODUCING]
-    student_name_ref = [None]  # str | None, set when we capture name
-    subject_ref = [subject]  # may be updated from student's topic choice
+    student_name_ref = [None]  # str | None
+    topic_ref = [None]  # raw topic text from student
+    grade_ref = [None]  # GRADE_6 .. GRADE_12
+    subject_ref = [None]  # MATH | SCIENCE | ENGLISH, set when entering TUTORING
+    grade_instructions_set = [False]  # True after we set grade_capture_instructions
 
     intro_silent_instructions = (
         "You are Nerd in setup mode. The introduction is playing. Do not respond to user input. Say nothing."
@@ -80,7 +260,18 @@ async def entrypoint(ctx: JobContext):
         "Whatever the user just said is their name. Respond with exactly: Great to meet you, [use the exact name they said]! What subject or topic would you like to work on today?"
     )
     topic_capture_instructions = (
-        "The user will tell you what subject or topic they want. Acknowledge in one short sentence and say you're ready to start. One sentence only."
+        "The user told you their topic. Acknowledge in one short sentence and ask: What grade are you in?"
+    )
+    grade_capture_instructions = (
+        "The user is telling you their grade. Accept only grades 6, 7, 8, 9, 10, 11, or 12. "
+        "Map freshman or ninth to 9, sophomore to 10, junior to 11, senior to 12. "
+        "If they say a grade outside 6-12, say exactly: I'm designed to help students in grades 6 through 12. What grade are you in? "
+        "If they say middle school, ask: Which grade — 6, 7, or 8? "
+        "Otherwise acknowledge their grade in one short sentence and say you're ready to start."
+    )
+    subject_clarify_instructions = (
+        "Ask the student to choose: Are we working on math, science, or English today? "
+        "Respond briefly based on their answer and confirm we're starting."
     )
 
     # Deepgram STT — Nova-3 for lower latency; endpointing_ms=200 avoids re-buffering
@@ -234,6 +425,18 @@ async def entrypoint(ctx: JobContext):
                     asyncio.get_running_loop().create_task(_update_topic_capture())
                 except Exception as e:
                     logger.exception("Schedule topic_capture instructions: %s", e)
+            elif session_state_ref[0] == CAPTURING_GRADE and not grade_instructions_set[0]:
+                grade_instructions_set[0] = True
+                logger.info("Grade question finished — now listening for grade")
+                async def _set_grade_capture():
+                    try:
+                        await agent.update_instructions(grade_capture_instructions)
+                    except Exception as e:
+                        logger.debug("update_instructions grade_capture: %s", e)
+                try:
+                    asyncio.get_running_loop().create_task(_set_grade_capture())
+                except Exception as e:
+                    logger.exception("Schedule grade_capture instructions: %s", e)
         if new_state == "listening":
             logger.info("Session started (agent state = listening)")
         if new_state == "listening" and not intro_sent[0]:
@@ -263,7 +466,7 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.debug("send_ui_update: %s", e)
 
-    current_topic = subject_ref[0]
+    current_topic = subject  # from room; updated when we capture topic or switch
     TOPIC_KEYWORDS = {
         "fractions": ["fraction", "numerator", "denominator"],
         "cell-mitosis": ["mitosis", "cell", "division", "prophase", "metaphase"],
@@ -294,16 +497,26 @@ async def entrypoint(ctx: JobContext):
         for topic, keywords in TOPIC_KEYWORDS.items():
             if topic != current_topic and any(k in t for k in keywords):
                 current_topic = topic
-                subject_ref[0] = topic
+                topic_ref[0] = topic
+                detected_subject = _detect_subject_from_topic(topic)
+                if detected_subject:
+                    subject_ref[0] = detected_subject
                 display = topic.replace("-", " ")
                 display = display.title()
+                gkey = grade_ref[0] or GRADE_8
+                subj = subject_ref[0] or MATH
                 async def do_switch():
                     try:
                         await agent.update_instructions(
-                            _build_socratic_prompt(topic, grade, student_name_ref[0] or "Student")
+                            _build_tutoring_prompt(
+                                student_name_ref[0] or "Student",
+                                gkey,
+                                subj,
+                                topic_ref[0] or topic,
+                            )
                         )
                         session.generate_reply(
-                            instructions=f"The student wants to switch to {display}. Acknowledge the switch warmly and ask your first Socratic question about {display} at {grade} grade level."
+                            instructions=f"The student wants to switch to {display}. Acknowledge the switch warmly and ask your first Socratic question about {display} at their grade level."
                         )
                     except Exception as e:
                         logger.debug("topic switch: %s", e)
@@ -322,21 +535,77 @@ async def entrypoint(ctx: JobContext):
             student_name_ref[0] = transcript
             logger.info("Captured student name: %s", student_name_ref[0])
         elif state == CAPTURING_TOPIC and is_final and transcript:
-            subject_ref[0] = transcript
-            session_state_ref[0] = TUTORING
-            current_topic = subject_ref[0]
-            logger.info("Captured topic, starting tutoring: subject=%s", subject_ref[0])
-            async def _switch_to_tutoring():
+            topic_ref[0] = transcript
+            session_state_ref[0] = CAPTURING_GRADE
+            current_topic = transcript
+            logger.info("Captured topic, now capturing grade: topic=%s", topic_ref[0])
+        elif state == CAPTURING_GRADE and is_final and transcript:
+            grade_key, invalid, need_middle_school = _parse_grade_from_transcript(transcript)
+            if invalid or need_middle_school:
+                logger.info("Grade invalid or middle-school ambiguous, staying in CAPTURING_GRADE")
+            elif grade_key:
+                grade_ref[0] = grade_key
+                logger.info("Captured grade: %s", grade_ref[0])
+                detected = _detect_subject_from_topic(topic_ref[0] or "")
+                if detected:
+                    subject_ref[0] = detected
+                    session_state_ref[0] = TUTORING
+                    logger.info("Subject detected from topic: %s, starting tutoring", subject_ref[0])
+                    async def _start_tutoring():
+                        try:
+                            await agent.update_instructions(
+                                _build_tutoring_prompt(
+                                    student_name_ref[0] or "Student",
+                                    grade_ref[0],
+                                    subject_ref[0],
+                                    topic_ref[0] or "",
+                                )
+                            )
+                        except Exception as e:
+                            logger.debug("update_instructions tutoring: %s", e)
+                    try:
+                        asyncio.get_running_loop().create_task(_start_tutoring())
+                    except Exception as e:
+                        logger.exception("Schedule tutoring instructions: %s", e)
+                else:
+                    session_state_ref[0] = CAPTURING_SUBJECT
+                    logger.info("Subject unclear, capturing subject")
+                    async def _set_subject_clarify():
+                        try:
+                            await agent.update_instructions(subject_clarify_instructions)
+                        except Exception as e:
+                            logger.debug("update_instructions subject_clarify: %s", e)
+                    try:
+                        asyncio.get_running_loop().create_task(_set_subject_clarify())
+                    except Exception as e:
+                        logger.exception("Schedule subject_clarify: %s", e)
+        elif state == CAPTURING_SUBJECT and is_final and transcript:
+            t = transcript.lower()
+            if "math" in t or "mathematics" in t:
+                subject_ref[0] = MATH
+            elif "science" in t:
+                subject_ref[0] = SCIENCE
+            elif "english" in t or "reading" in t or "writing" in t or "literature" in t:
+                subject_ref[0] = ENGLISH
+            if subject_ref[0]:
+                session_state_ref[0] = TUTORING
+                logger.info("Captured subject: %s, starting tutoring", subject_ref[0])
+                async def _start_tutoring_from_subject():
+                    try:
+                        await agent.update_instructions(
+                            _build_tutoring_prompt(
+                                student_name_ref[0] or "Student",
+                                grade_ref[0] or GRADE_8,
+                                subject_ref[0],
+                                topic_ref[0] or "",
+                            )
+                        )
+                    except Exception as e:
+                        logger.debug("update_instructions tutoring: %s", e)
                 try:
-                    await agent.update_instructions(
-                        _build_socratic_prompt(subject_ref[0], grade, student_name_ref[0] or "Student")
-                    )
+                    asyncio.get_running_loop().create_task(_start_tutoring_from_subject())
                 except Exception as e:
-                    logger.debug("update_instructions tutoring: %s", e)
-            try:
-                asyncio.get_running_loop().create_task(_switch_to_tutoring())
-            except Exception as e:
-                logger.exception("Schedule tutoring instructions: %s", e)
+                    logger.exception("Schedule tutoring instructions: %s", e)
         on_user_transcribed(ev)
         if transcript and state == TUTORING:
             _check_topic_switch(transcript)
