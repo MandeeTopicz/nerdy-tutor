@@ -284,16 +284,15 @@ async def entrypoint(ctx: JobContext):
         f"Acknowledge their choice in one short sentence and jump right into your first Socratic question about it."
     )
 
-    # Deepgram STT — Nova-3 optimized for latency (target <150ms, max <300ms).
-    # endpointing_ms=300; vad_events=True. (utterance_end_ms not exposed by LiveKit Deepgram plugin.)
+    # Deepgram STT — Nova-3, tuned for <1000ms E2E (lower endpointing = faster commit).
     stt = deepgram.STT(
         model="nova-3",
         language="en",
         interim_results=True,
-        endpointing_ms=300,
+        endpointing_ms=200,
         punctuate=False,
-        smart_format=False,  # disable — adds latency
-        no_delay=True,       # request lowest latency mode
+        smart_format=False,
+        no_delay=True,
         vad_events=True,
     )
 
@@ -325,10 +324,10 @@ async def entrypoint(ctx: JobContext):
         llm=llm,
         tts=tts,
         turn_detection="vad",
-        allow_interruptions=True,   # Let students interrupt — avoids buffering speech and inflating STT latency
+        allow_interruptions=True,
         aec_warmup_duration=None,
-        min_endpointing_delay=0.5,  # wait at least 500ms of silence before committing
-        max_endpointing_delay=1.5,  # allow up to 1.5s for mid-sentence pauses
+        min_endpointing_delay=0.3,  # 300ms silence before committing (lower = faster E2E, target <1s)
+        max_endpointing_delay=1.2,
         preemptive_generation=True,
         user_away_timeout=None,  # we handle inactivity ourselves in inactivity_monitor (20s check-in, ~45s close)
     )

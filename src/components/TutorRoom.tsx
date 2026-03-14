@@ -211,32 +211,56 @@ function LatencyDashboard({ metrics }: { metrics: LatencyMetrics }) {
   );
 }
 
+/** Merge consecutive same-role segments into one message so the transcript reads as whole turns. */
+function mergeConsecutiveSameRole(messages: TranscriptMessage[]): TranscriptMessage[] {
+  if (messages.length <= 1) return messages;
+  const out: TranscriptMessage[] = [];
+  let cur = { ...messages[0] };
+  for (let i = 1; i < messages.length; i++) {
+    if (messages[i].role === cur.role) {
+      cur = { ...cur, text: `${cur.text} ${messages[i].text}`.trim() };
+    } else {
+      out.push(cur);
+      cur = { ...messages[i] };
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
 function useTranscriptMessages(): TranscriptMessage[] {
   const transcriptions = useTranscriptions();
   const { localParticipant } = useLocalParticipant();
   return useMemo(() => {
-    return transcriptions.map((t) => ({
+    const raw = transcriptions.map((t) => ({
       role: (t.participantInfo.identity === localParticipant.identity ? "You" : "Tutor") as "You" | "Tutor",
       text: t.text,
     }));
+    return mergeConsecutiveSameRole(raw);
   }, [transcriptions, localParticipant.identity]);
 }
 
 /**
- * Wraps useTranscriptMessages so new Tutor lines only appear once the agent
- * has started speaking (so text stays in sync with audio). User lines pass
- * through immediately. Uses a ref to track the last-released index so that
- * updates to existing segment text (e.g. interim → final) are always visible.
+ * Wraps useTranscriptMessages so new Tutor lines are revealed progressively
+ * over the duration of speech. Estimates total speech time from word count
+ * (~160 WPM) and distributes words evenly across that window in chunks.
+ * User lines pass through immediately. When the agent stops speaking, any
+ * remaining text is shown in full.
  */
 function useSyncedTranscriptMessages(agentState: string): TranscriptMessage[] {
   const raw = useTranscriptMessages();
   const releasedIdxRef = useRef(0);
+  const [revealFraction, setRevealFraction] = useState(1); // 0→1 over speech duration
+  const rafRef = useRef<number | null>(null);
+  const speechStartRef = useRef(0);
+  const speechDurationRef = useRef(0);
+  const revealingMsgIdxRef = useRef(-1);
+  const prevAgentState = useRef(agentState);
 
   // Release tutor messages once agent is speaking or listening (finished speaking)
   if (agentState === "speaking" || agentState === "listening") {
     releasedIdxRef.current = raw.length;
   } else {
-    // While thinking, release any trailing user messages immediately
     while (
       releasedIdxRef.current < raw.length &&
       raw[releasedIdxRef.current].role === "You"
@@ -245,7 +269,56 @@ function useSyncedTranscriptMessages(agentState: string): TranscriptMessage[] {
     }
   }
 
-  return raw.slice(0, releasedIdxRef.current);
+  const released = raw.slice(0, releasedIdxRef.current);
+
+  let lastTutorIdx = -1;
+  for (let i = released.length - 1; i >= 0; i--) {
+    if (released[i].role === "Tutor") { lastTutorIdx = i; break; }
+  }
+
+  useEffect(() => {
+    // Agent just started speaking — begin progressive reveal
+    if (agentState === "speaking" && lastTutorIdx >= 0 && lastTutorIdx !== revealingMsgIdxRef.current) {
+      revealingMsgIdxRef.current = lastTutorIdx;
+      const wordCount = (released[lastTutorIdx]?.text ?? "").split(/\s+/).length;
+      // Estimate speech duration: ~160 WPM = 375ms/word, with a small buffer
+      speechDurationRef.current = Math.max(1000, wordCount * 375);
+      speechStartRef.current = performance.now();
+      setRevealFraction(0);
+
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      const tick = () => {
+        const elapsed = performance.now() - speechStartRef.current;
+        const frac = Math.min(1, elapsed / speechDurationRef.current);
+        setRevealFraction(frac);
+        if (frac < 1) rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    }
+
+    // Agent stopped speaking — show everything
+    if (agentState !== "speaking" && prevAgentState.current === "speaking") {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      setRevealFraction(1);
+      revealingMsgIdxRef.current = -1;
+    }
+
+    prevAgentState.current = agentState;
+  }, [agentState, lastTutorIdx, released]);
+
+  useEffect(() => {
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, []);
+
+  return released.map((msg, i) => {
+    if (i === revealingMsgIdxRef.current && msg.role === "Tutor" && revealFraction < 1) {
+      const words = msg.text.split(/\s+/);
+      const show = Math.max(1, Math.ceil(words.length * revealFraction));
+      if (show >= words.length) return msg;
+      return { ...msg, text: words.slice(0, show).join(" ") };
+    }
+    return msg;
+  });
 }
 
 function LiveTranscriptPanel({
@@ -446,7 +519,9 @@ function TutorRoomInner({
 
   return (
     <div className="flex h-[calc(100vh-60px)] w-full flex-row items-center justify-center gap-8 px-12 font-sans">
-      {/* Left column: avatar + controls + latency */}
+      {/* Left spacer so avatar stays centered */}
+      <div className="min-w-0 flex-1" aria-hidden />
+      {/* Center: avatar + controls + latency */}
       <div className="flex w-[35vw] min-w-[320px] max-w-[560px] flex-shrink-0 flex-col items-center gap-4">
         <div className="relative w-full">
           {/* Glow behind tile only — video stays full opacity */}
@@ -487,12 +562,14 @@ function TutorRoomInner({
         <ConceptTracker subject={subject} coveredConcepts={coveredConcepts} />
       </div>
 
-      {/* Right column: transcript panel */}
-      <LiveTranscriptPanel
-        messages={transcriptMessages}
-        isOpen={transcriptOpen}
-        onToggle={() => setTranscriptOpen((o) => !o)}
-      />
+      {/* Right: transcript panel */}
+      <div className="flex min-w-0 flex-1 justify-end">
+        <LiveTranscriptPanel
+          messages={transcriptMessages}
+          isOpen={transcriptOpen}
+          onToggle={() => setTranscriptOpen((o) => !o)}
+        />
+      </div>
     </div>
   );
 }
