@@ -26,7 +26,15 @@ export type TranscriptEntry = { role: "tutor" | "student"; text: string; timesta
 export type SessionEndMeta = { timedOut?: boolean; everResponded?: boolean };
 const SESSION_BG = "bg-[#0f1129]";
 const SESSION_GRADIENT = "bg-gradient-to-b from-[#0f1129] to-[#1a1440]";
-const CARD_STYLE = "rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm";
+
+/** Static Tailwind classes for avatar glow — all variants must be full strings so production purge keeps them. */
+const AVATAR_GLOW_CLASSES: Record<string, string> = {
+  celebrating: "shadow-[0_0_50px_rgba(74,222,128,0.4)]",
+  listening: "shadow-[0_0_40px_rgba(0,212,200,0.35)]",
+  thinking: "shadow-[0_0_40px_rgba(245,158,11,0.35)]",
+  speaking: "shadow-[0_0_45px_rgba(74,222,128,0.4)]",
+  none: "shadow-none",
+};
 
 /** Wraps VideoTrack and forces the video element to be unmuted so avatar/agent audio is heard (Simli sends audio with the video track). */
 function UnmutedVideoTrack({
@@ -521,24 +529,26 @@ function TutorRoomInner({
     <div className="flex h-[calc(100vh-60px)] w-full flex-row items-center justify-center gap-8 px-12 font-sans">
       {/* Left spacer so avatar stays centered */}
       <div className="min-w-0 flex-1" aria-hidden />
-      {/* Center: avatar + controls + latency */}
-      <div className="flex w-[38vw] min-w-[340px] max-w-[620px] flex-shrink-0 flex-col items-center gap-4">
-        <div className="relative w-full">
-          {/* Glow behind tile only — video stays full opacity */}
+      {/* Center: avatar + controls + latency — overflow and max-h so layout is identical in prod */}
+      <div className="flex max-h-[calc(100vh-8rem)] min-h-0 w-[38vw] min-w-[340px] max-w-[620px] flex-shrink-0 flex-col items-center gap-4 overflow-hidden">
+        <div className="relative flex min-h-0 w-full max-w-full flex-col items-center">
+          {/* Glow behind tile — use lookup so Tailwind keeps all classes in production */}
           <div
-            className={`pointer-events-none absolute -inset-1 -z-10 rounded-2xl transition-all duration-300 ${
-              celebrating
-                ? "shadow-[0_0_50px_rgba(74,222,128,0.4)]"
+            className={
+              "pointer-events-none absolute -inset-1 -z-10 rounded-2xl transition-all duration-300 " +
+              (celebrating
+                ? AVATAR_GLOW_CLASSES.celebrating
                 : stateStr === "listening"
-                  ? "shadow-[0_0_40px_rgba(0,212,200,0.35)]"
+                  ? AVATAR_GLOW_CLASSES.listening
                   : stateStr === "thinking"
-                    ? "shadow-[0_0_40px_rgba(245,158,11,0.35)]"
+                    ? AVATAR_GLOW_CLASSES.thinking
                     : stateStr === "speaking"
-                      ? "shadow-[0_0_45px_rgba(74,222,128,0.4)]"
-                      : "shadow-none"
-            }`}
+                      ? AVATAR_GLOW_CLASSES.speaking
+                      : AVATAR_GLOW_CLASSES.none)
+            }
           />
-          <div className={`relative w-full aspect-[3/4] overflow-hidden rounded-2xl ${CARD_STYLE}`}>
+          {/* Avatar tile: static classes only; h-[70vh] + aspect-[3/4] so width is derived, never overflows */}
+          <div className="relative mx-auto h-[70vh] max-h-[70vh] w-auto max-w-full overflow-hidden rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm aspect-[3/4]">
             {videoTrack ? (
               <UnmutedVideoTrack trackRef={videoTrack} className="h-full w-full object-cover" />
             ) : (

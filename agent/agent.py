@@ -656,11 +656,76 @@ async def entrypoint(ctx: JobContext):
             last_student_response_time[0] = time.time()
             student_ever_responded[0] = True
             second_30s_after_check_in[0] = False
+            onboarding_repeated[0] = False
 
     _closing_message = (
         "No worries, it looks like you stepped away. "
         "Great work today. Come back anytime to keep learning. Bye for now."
     )
+
+    _onboarding_exit_message = (
+        "It looks like you're not available right now. "
+        "No worries at all, come back whenever you're ready and we'll pick right up. Bye for now."
+    )
+
+    onboarding_repeated = [False]  # True after we've repeated the question once
+
+    async def onboarding_inactivity_monitor():
+        """During onboarding (CAPTURING_NAME / CAPTURING_TOPIC), if the student
+        doesn't respond within 15s: repeat the question. If still no response
+        after another 15s: say goodbye and end the session."""
+        while not greeting_done[0]:
+            await asyncio.sleep(1)
+
+        logger.info("[Onboarding Timeout] Monitor started")
+
+        while not onboarding_done[0]:
+            await asyncio.sleep(2)
+            state = session_state_ref[0]
+            if state not in (CAPTURING_NAME, CAPTURING_TOPIC):
+                continue
+
+            elapsed = time.time() - last_student_response_time[0]
+
+            if onboarding_repeated[0]:
+                # Already repeated once — 15s more with no response → exit
+                if elapsed >= 15:
+                    logger.info("[Onboarding Timeout] No response after repeat, ending session")
+                    try:
+                        await say_and_wait(_onboarding_exit_message, timeout=15.0)
+                    except Exception as e:
+                        logger.debug("say onboarding exit: %s", e)
+                    try:
+                        await ctx.room.local_participant.publish_data(
+                            json.dumps({
+                                "type": "session_timeout",
+                                "student_ever_responded": student_ever_responded[0],
+                            }).encode(),
+                            reliable=True,
+                        )
+                    except Exception as e:
+                        logger.debug("publish session_timeout: %s", e)
+                    await asyncio.sleep(1)
+                    ctx.shutdown(reason="onboarding_timeout")
+                    return
+            else:
+                # First 15s with no response → repeat the question
+                if elapsed >= 15:
+                    logger.info("[Onboarding Timeout] No response for 15s in %s, repeating", state)
+                    repeat_text = (
+                        "Hey, are you still there? What's your name?"
+                        if state == CAPTURING_NAME
+                        else f"Are you still there? Would you like to focus on a specific part of {subject_display}, or review it as a whole?"
+                    )
+                    try:
+                        await say_and_wait(repeat_text, timeout=12.0)
+                    except RuntimeError as e:
+                        if "isn't running" not in str(e) and "is closing" not in str(e):
+                            raise
+                    onboarding_repeated[0] = True
+                    last_student_response_time[0] = time.time()
+
+        logger.info("[Onboarding Timeout] Onboarding complete, monitor exiting")
 
     async def inactivity_monitor():
         # Wait until full onboarding is done (name + topic captured, TUTORING state entered)
@@ -729,6 +794,7 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.error("Simli avatar failed to start — check SIMLI_API_KEY, SIMLI_FACE_ID: %s", e, exc_info=True)
 
+    asyncio.create_task(onboarding_inactivity_monitor())
     asyncio.create_task(inactivity_monitor())
     asyncio.create_task(send_intro_after_startup())
     logger.info("Calling session.start(agent=..., room=...)")
