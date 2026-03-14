@@ -125,22 +125,7 @@ function EndSessionButton({
   );
 }
 
-function HintButton() {
-  const room = useRoomContext();
-  const handleClick = useCallback(() => {
-    const payload = JSON.stringify({ type: "hint_request" });
-    room.localParticipant.publishData(new TextEncoder().encode(payload), { reliable: true });
-  }, [room]);
-  return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="rounded-full border border-yellow-400/30 bg-yellow-400/10 px-4 py-2 text-sm text-yellow-300 transition hover:bg-yellow-400/20"
-    >
-      💡 Hint
-    </button>
-  );
-}
+
 
 function SessionTimer() {
   const [elapsed, setElapsed] = useState(0);
@@ -336,15 +321,28 @@ function TutorRoomInner({
   const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [coveredConcepts, setCoveredConcepts] = useState<string[]>([]);
   const [celebrating, setCelebrating] = useState(false);
+  const [micReady, setMicReady] = useState(false);
   const prevAgentStateRef = useRef<string | undefined>(undefined);
 
   const endReasonRef = useRef<"timeout" | "button" | "unexpected" | null>(null);
   const wasConnectedRef = useRef(false);
 
+  // Enable mic when agent signals it's ready (after intro finishes)
+  useEffect(() => {
+    if (!micReady) return;
+    room.localParticipant
+      .setMicrophoneEnabled(true)
+      .then(() => console.log("[Mic] enabled after intro"))
+      .catch((e: unknown) => console.error("[Mic] failed to enable:", e));
+  }, [micReady, room]);
+
   useDataChannel((msg) => {
     try {
       const payload = JSON.parse(new TextDecoder().decode(msg.payload));
       console.log("[Data] received:", payload);
+      if (payload.type === "mic_ready") {
+        setMicReady(true);
+      }
       if (payload.type === "concept_covered" && payload.concept) {
         setCoveredConcepts((prev) => (prev.includes(payload.concept) ? prev : [...prev, payload.concept]));
       }
@@ -484,7 +482,6 @@ function TutorRoomInner({
             getDurationSeconds={getDurationSeconds}
             onBeforeEnd={() => { endReasonRef.current = "button"; }}
           />
-          <HintButton />
         </div>
         <LatencyDashboard metrics={metrics} />
         <ConceptTracker subject={subject} coveredConcepts={coveredConcepts} />
@@ -551,9 +548,7 @@ function RoomContent({
             <span className="text-neutral-500">|</span>
             <SessionTimer />
           </div>
-          <nav className="flex items-center gap-4">
-            <a href="#" className="text-base font-medium text-teal-400 hover:text-teal-300">NerdyTutor</a>
-          </nav>
+          <div />
         </header>
         <main className="flex min-h-0 flex-1 overflow-hidden">
           <TutorRoomInner onEnd={onEnd} getTranscript={getTranscript} getDurationSeconds={getDurationSeconds} subject={subject} />
@@ -673,7 +668,7 @@ export default function TutorRoom({
       token={token}
       serverUrl={livekitUrl}
       connect={true}
-      audio={true}
+      audio={false}
       video={false}
       onDisconnected={handleDisconnect}
       style={{ height: "100vh" }}
