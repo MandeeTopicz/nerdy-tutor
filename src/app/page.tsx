@@ -86,14 +86,6 @@ const TOPIC_TO_SUBJECT: Record<string, string> = {
   photosynthesis: "SCIENCE",
 };
 
-function inferTopicFromSuggestion(text: string): string | null {
-  const t = text.toLowerCase();
-  if (t.includes("fraction") || t.includes("numerat") || t.includes("denominat") || t.includes("equivalent")) return "fractions";
-  if (t.includes("mitosis") || t.includes("cell ") || t.includes("cell cycle") || t.includes("prophase") || t.includes("metaphase")) return "cell-mitosis";
-  if (t.includes("photosynthesis") || t.includes("chlorophyll") || t.includes("calvin") || t.includes("glucose")) return "photosynthesis";
-  return null;
-}
-
 function Landing({
   subject,
   setSubject,
@@ -258,12 +250,6 @@ export default function Home() {
     if (clearTopic) setSubject(null);
   }, []);
 
-  const handleSuggestedTopicClick = useCallback((topicText: string) => {
-    const topicId = inferTopicFromSuggestion(topicText);
-    if (topicId) setSubject(topicId);
-    goToLanding(false);
-  }, [goToLanding]);
-
   if (summaryView === "loading") {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-[#0f1129] bg-gradient-to-b from-[#0f1129] to-[#1a1440] font-sans">
@@ -296,7 +282,6 @@ export default function Home() {
         data={summaryData}
         onStudyAgain={() => goToLanding(false)}
         onNewTopic={() => goToLanding(true)}
-        onSuggestedTopicClick={handleSuggestedTopicClick}
       />
     );
   }

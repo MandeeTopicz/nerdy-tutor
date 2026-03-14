@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronRight, Info, Star } from "lucide-react";
+import { Check, Info, Star } from "lucide-react";
 
 export type SessionSummaryData = {
   studentName: string;
@@ -40,12 +40,10 @@ export function SessionSummary({
   data,
   onStudyAgain,
   onNewTopic,
-  onSuggestedTopicClick,
 }: {
   data: SessionSummaryData;
   onStudyAgain: () => void;
   onNewTopic: () => void;
-  onSuggestedTopicClick?: (topicText: string) => void;
 }) {
   const colorClass = COMPREHENSION_COLORS[data.comprehensionLevel] ?? COMPREHENSION_COLORS.Proficient;
 
@@ -138,14 +136,9 @@ export function SessionSummary({
             <ul className="space-y-3">
               {data.suggestedNextTopics.map((topic, i) => (
                 <li key={i}>
-                  <button
-                    type="button"
-                    onClick={() => onSuggestedTopicClick?.(topic) ?? onStudyAgain()}
-                    className="flex w-full items-center justify-between rounded-lg border border-teal-400/30 bg-teal-400/5 px-4 py-3 text-left text-teal-200 transition hover:bg-teal-400/10"
-                  >
+                  <div className="flex w-full items-center rounded-lg border border-teal-400/30 bg-teal-400/5 px-4 py-3 text-teal-200">
                     <span>{topic}</span>
-                    <ChevronRight className="h-4 w-4 text-teal-400" />
-                  </button>
+                  </div>
                 </li>
               ))}
             </ul>

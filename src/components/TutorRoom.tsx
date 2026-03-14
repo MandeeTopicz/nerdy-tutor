@@ -329,6 +329,11 @@ function useSyncedTranscriptMessages(agentState: string): TranscriptMessage[] {
   });
 }
 
+/** Static class strings for transcript panel visibility — no interpolation so Tailwind keeps them. */
+const TRANSCRIPT_PANEL_OPEN =
+  "flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-3 text-xs transition-all duration-300 opacity-100";
+const TRANSCRIPT_PANEL_CLOSED = "hidden";
+
 function LiveTranscriptPanel({
   messages,
   isOpen,
@@ -343,21 +348,19 @@ function LiveTranscriptPanel({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
   return (
-    <div className="flex h-[70vh] w-[28vw] min-w-[280px] max-w-[480px] flex-shrink-0 flex-col">
+    <div className="flex min-h-0 w-full flex-1 flex-col">
       <button
         type="button"
         onClick={onToggle}
         className="mb-2 flex w-fit shrink-0 items-center gap-1.5 self-end rounded-full border border-teal-400/40 px-3 py-1.5 text-xs font-medium text-teal-300 transition hover:bg-teal-400/10"
       >
         {isOpen ? "💡 Transcript " : ""}
-        <span className={`inline-block transition-transform duration-300 ${isOpen ? "rotate-180" : ""}`}>‹</span>
+        <span className={isOpen ? "inline-block rotate-180 transition-transform duration-300" : "inline-block transition-transform duration-300"}>
+          ‹
+        </span>
         {isOpen ? "" : " Transcript"}
       </button>
-      <div
-        className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-4 transition-all duration-300 ${
-          isOpen ? "opacity-100" : "hidden"
-        }`}
-      >
+      <div className={isOpen ? TRANSCRIPT_PANEL_OPEN : TRANSCRIPT_PANEL_CLOSED}>
         <div className="shrink-0 text-xs font-medium text-teal-400">💡 Live Transcript</div>
         <div ref={scrollRef} className="mt-2 min-h-0 flex-1 space-y-3 overflow-y-auto">
           {messages.map((m, i) => (
@@ -399,7 +402,7 @@ function TutorRoomInner({
   const fallbackVideoTrack: TrackReference | undefined =
     firstTracks[0] ?? secondTracks[0];
   const videoTrack = agentVideoTrack ?? fallbackVideoTrack;
-  const [transcriptOpen, setTranscriptOpen] = useState(true);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [coveredConcepts, setCoveredConcepts] = useState<string[]>([]);
   const [celebrating, setCelebrating] = useState(false);
   const [micReady, setMicReady] = useState(false);
@@ -526,12 +529,10 @@ function TutorRoomInner({
   }
 
   return (
-    <div className="flex h-[calc(100vh-60px)] w-full flex-row items-center justify-center gap-8 px-12 font-sans">
-      {/* Left spacer so avatar stays centered */}
-      <div className="min-w-0 flex-1" aria-hidden />
-      {/* Center: avatar + controls + latency — overflow and max-h so layout is identical in prod */}
-      <div className="flex max-h-[calc(100vh-8rem)] min-h-0 w-[38vw] min-w-[340px] max-w-[620px] flex-shrink-0 flex-col items-center gap-4 overflow-hidden">
-        <div className="relative flex min-h-0 w-full max-w-full flex-col items-center">
+    <div className="relative flex h-full min-h-0 w-full items-center justify-center py-6 font-sans">
+      {/* Avatar: centered on screen */}
+      <div className="flex w-[380px] flex-shrink-0 flex-col items-center justify-center">
+        <div className="relative flex flex-col items-center">
           {/* Glow behind tile — use lookup so Tailwind keeps all classes in production */}
           <div
             className={
@@ -547,8 +548,8 @@ function TutorRoomInner({
                       : AVATAR_GLOW_CLASSES.none)
             }
           />
-          {/* Avatar tile: static classes only; h-[70vh] + aspect-[3/4] so width is derived, never overflows */}
-          <div className="relative mx-auto h-[70vh] max-h-[70vh] w-auto max-w-full overflow-hidden rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm aspect-[3/4]">
+          {/* Avatar video: height drives size, capped at 75vh; static classes only */}
+          <div className="relative mx-auto h-[75vh] max-h-[75vh] w-auto overflow-hidden rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm aspect-[3/4]">
             {videoTrack ? (
               <UnmutedVideoTrack trackRef={videoTrack} className="h-full w-full object-cover" />
             ) : (
@@ -559,7 +560,8 @@ function TutorRoomInner({
             )}
           </div>
         </div>
-        <div className="mt-3 flex w-full flex-row flex-wrap items-center justify-center gap-4">
+        {/* Controls bar: never cut off */}
+        <div className="flex flex-shrink-0 flex-row flex-wrap items-center justify-center gap-4 py-4">
           <MicControl />
           <EndSessionButton
             onEnd={onEnd}
@@ -572,8 +574,8 @@ function TutorRoomInner({
         <ConceptTracker subject={subject} coveredConcepts={coveredConcepts} />
       </div>
 
-      {/* Right: transcript panel */}
-      <div className="flex min-w-0 flex-1 justify-end">
+      {/* Transcript: pinned to right edge, independent of avatar centering */}
+      <div className="absolute right-4 top-6 bottom-6 flex w-[220px] flex-col">
         <LiveTranscriptPanel
           messages={transcriptMessages}
           isOpen={transcriptOpen}
@@ -627,7 +629,7 @@ function RoomContent({
   return (
     <>
       <RoomAudioRendererWithLog />
-      <div className={`flex h-screen flex-col overflow-hidden ${SESSION_BG} ${SESSION_GRADIENT}`}>
+      <div className="flex h-screen flex-col overflow-hidden bg-[#0f1129] bg-gradient-to-b from-[#0f1129] to-[#1a1440]">
         <header className="relative flex shrink-0 h-20 items-center justify-between border-b border-white/10 bg-white/5 px-6 py-5 backdrop-blur-sm">
           <h1 className="text-2xl font-medium lowercase tracking-tight text-white">nerdy</h1>
           <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-4 text-sm text-neutral-400">
@@ -727,7 +729,7 @@ export default function TutorRoom({
 
   if (!connected && !autoConnect) {
     return (
-      <div className={`flex min-h-screen flex-col items-center justify-center gap-6 p-8 font-sans ${SESSION_BG} ${SESSION_GRADIENT}`}>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-[#0f1129] bg-gradient-to-b from-[#0f1129] to-[#1a1440] p-8 font-sans">
         <h1 className="text-2xl font-semibold text-white">AI Video Tutor</h1>
         <p className="text-neutral-300">Connect your microphone to start the session</p>
         {error && <p className="text-sm text-rose-400">{error}</p>}
@@ -744,7 +746,7 @@ export default function TutorRoom({
 
   if (!token || !livekitUrl) {
     return (
-      <div className={`flex min-h-screen items-center justify-center font-sans ${SESSION_BG} ${SESSION_GRADIENT}`}>
+      <div className="flex min-h-screen items-center justify-center bg-[#0f1129] bg-gradient-to-b from-[#0f1129] to-[#1a1440] font-sans">
         <div className="text-neutral-300">{!livekitUrl ? "Loading…" : "Connecting…"}</div>
       </div>
     );
