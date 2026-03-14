@@ -84,8 +84,11 @@ function UnmutedVideoTrack({
   }, [unmute]);
 
   return (
-    <div ref={containerRef} className={`relative ${className ?? ""}`}>
-      <VideoTrack trackRef={trackRef} className="h-full w-full object-cover" />
+    <div ref={containerRef} className={`relative ${className ?? ""}`} style={{ width: "100%", height: "100%" }}>
+      <VideoTrack
+        trackRef={trackRef}
+        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+      />
       {needsInteraction && (
         <button
           type="button"
@@ -529,30 +532,14 @@ function TutorRoomInner({
   }
 
   return (
-    <div
-      className="relative font-sans"
-      style={{
-        display: "flex",
-        flexDirection: "row",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        gap: "1.5rem",
-        maxWidth: "64rem",
-        width: "100%",
-        margin: "0 auto",
-        padding: "1.5rem 1.5rem 0",
-      }}
-    >
+    <div className="relative font-sans" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%", padding: "1.5rem" }}>
       {/* Avatar: centered on screen */}
-      <div
-        className="flex flex-col items-center justify-center"
-        style={{ width: "320px", flexShrink: 0 }}
-      >
-        <div className="relative flex flex-col items-center">
-          {/* Glow behind tile — use lookup so Tailwind keeps all classes in production */}
+      <div style={{ width: "38vw", minWidth: "340px", maxWidth: "620px", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
+        <div className="relative" style={{ width: "100%" }}>
+          {/* Glow behind tile */}
           <div
             className={
-              "pointer-events-none absolute -inset-1 -z-10 rounded-2xl transition-all duration-300 " +
+              "pointer-events-none absolute -z-10 rounded-2xl transition-all duration-300 " +
               (celebrating
                 ? AVATAR_GLOW_CLASSES.celebrating
                 : stateStr === "listening"
@@ -563,30 +550,25 @@ function TutorRoomInner({
                       ? AVATAR_GLOW_CLASSES.speaking
                       : AVATAR_GLOW_CLASSES.none)
             }
+            style={{ inset: "-4px" }}
           />
-          {/* Avatar video: height drives size, capped at 75vh; sizing via style for Vercel build */}
+          {/* Avatar video */}
           <div
-            className="relative mx-auto border border-white/10 bg-white/5 backdrop-blur-sm"
-            style={{
-              width: "100%",
-              maxHeight: "70vh",
-              aspectRatio: "3/4",
-              overflow: "hidden",
-              borderRadius: "1rem",
-            }}
+            className="relative border border-white/10 bg-white/5 backdrop-blur-sm"
+            style={{ width: "100%", aspectRatio: "3/4", overflow: "hidden", borderRadius: "1rem" }}
           >
             {videoTrack ? (
-              <UnmutedVideoTrack trackRef={videoTrack} className="h-full w-full object-cover" />
+              <UnmutedVideoTrack trackRef={videoTrack} className="" />
             ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-white/5">
+              <div className="flex flex-col items-center justify-center gap-3 bg-white/5" style={{ width: "100%", height: "100%" }}>
                 <div className="h-8 w-8 animate-spin rounded-full border-2 border-teal-400/30 border-t-teal-400" />
                 <p className="text-sm text-neutral-400">Loading avatar…</p>
               </div>
             )}
           </div>
         </div>
-        {/* Controls bar: never cut off */}
-        <div className="flex flex-shrink-0 flex-row flex-wrap items-center justify-center gap-4 py-4">
+        {/* Controls */}
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "1rem", paddingTop: "0.75rem" }}>
           <MicControl />
           <EndSessionButton
             onEnd={onEnd}
@@ -599,15 +581,8 @@ function TutorRoomInner({
         <ConceptTracker subject={subject} coveredConcepts={coveredConcepts} />
       </div>
 
-      {/* Transcript column: takes remaining space */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
+      {/* Transcript: pinned to right edge */}
+      <div style={{ position: "absolute", right: "1rem", top: "1.5rem", bottom: "1.5rem", width: "220px", display: "flex", flexDirection: "column" }}>
         <LiveTranscriptPanel
           messages={transcriptMessages}
           isOpen={transcriptOpen}
