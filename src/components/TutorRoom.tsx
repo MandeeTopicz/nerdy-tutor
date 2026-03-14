@@ -522,7 +522,7 @@ function TutorRoomInner({
       {/* Left spacer so avatar stays centered */}
       <div className="min-w-0 flex-1" aria-hidden />
       {/* Center: avatar + controls + latency */}
-      <div className="flex w-[35vw] min-w-[320px] max-w-[560px] flex-shrink-0 flex-col items-center gap-4">
+      <div className="flex w-[38vw] min-w-[340px] max-w-[620px] flex-shrink-0 flex-col items-center gap-4">
         <div className="relative w-full">
           {/* Glow behind tile only — video stays full opacity */}
           <div
