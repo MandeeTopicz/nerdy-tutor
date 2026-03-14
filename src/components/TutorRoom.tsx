@@ -529,9 +529,25 @@ function TutorRoomInner({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 w-full items-center justify-center py-6 font-sans">
+    <div
+      className="relative font-sans"
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        gap: "1.5rem",
+        maxWidth: "64rem",
+        width: "100%",
+        margin: "0 auto",
+        padding: "1.5rem 1.5rem 0",
+      }}
+    >
       {/* Avatar: centered on screen */}
-      <div className="flex w-[380px] flex-shrink-0 flex-col items-center justify-center">
+      <div
+        className="flex flex-col items-center justify-center"
+        style={{ width: "320px", flexShrink: 0 }}
+      >
         <div className="relative flex flex-col items-center">
           {/* Glow behind tile — use lookup so Tailwind keeps all classes in production */}
           <div
@@ -548,8 +564,17 @@ function TutorRoomInner({
                       : AVATAR_GLOW_CLASSES.none)
             }
           />
-          {/* Avatar video: height drives size, capped at 75vh; static classes only */}
-          <div className="relative mx-auto h-[75vh] max-h-[75vh] w-auto overflow-hidden rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm aspect-[3/4]">
+          {/* Avatar video: height drives size, capped at 75vh; sizing via style for Vercel build */}
+          <div
+            className="relative mx-auto border border-white/10 bg-white/5 backdrop-blur-sm"
+            style={{
+              width: "100%",
+              maxHeight: "70vh",
+              aspectRatio: "3/4",
+              overflow: "hidden",
+              borderRadius: "1rem",
+            }}
+          >
             {videoTrack ? (
               <UnmutedVideoTrack trackRef={videoTrack} className="h-full w-full object-cover" />
             ) : (
@@ -574,8 +599,15 @@ function TutorRoomInner({
         <ConceptTracker subject={subject} coveredConcepts={coveredConcepts} />
       </div>
 
-      {/* Transcript: pinned to right edge, independent of avatar centering */}
-      <div className="absolute right-4 top-6 bottom-6 flex w-[220px] flex-col">
+      {/* Transcript column: takes remaining space */}
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         <LiveTranscriptPanel
           messages={transcriptMessages}
           isOpen={transcriptOpen}
