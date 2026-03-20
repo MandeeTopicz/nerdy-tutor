@@ -17,7 +17,9 @@ export async function GET(req: NextRequest) {
 
     const apiKey = process.env.LIVEKIT_API_KEY;
     const apiSecret = process.env.LIVEKIT_API_SECRET;
-    const livekitUrl = process.env.LIVEKIT_URL ?? process.env.NEXT_PUBLIC_LIVEKIT_URL;
+    const rawUrl = process.env.LIVEKIT_URL ?? process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "";
+    // RoomServiceClient needs https://, not wss://
+    const livekitUrl = rawUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://");
 
     if (!apiKey || !apiSecret) {
       return NextResponse.json(
@@ -34,13 +36,21 @@ export async function GET(req: NextRequest) {
 
     const roomMetadata = JSON.stringify({ grade, subject });
     const roomSvc = new RoomServiceClient(livekitUrl, apiKey, apiSecret);
-    await roomSvc.createRoom({
-      name: roomName,
-      metadata: roomMetadata,
-      emptyTimeout: 120,
-      departureTimeout: 90,
-      agents: [new RoomAgentDispatch({ agentName: AGENT_NAME })],
-    });
+    try {
+      await roomSvc.createRoom({
+        name: roomName,
+        metadata: roomMetadata,
+        emptyTimeout: 120,
+        departureTimeout: 90,
+        agents: [new RoomAgentDispatch({ agentName: AGENT_NAME })],
+      });
+    } catch (roomErr) {
+      console.error("createRoom failed:", roomErr);
+      return NextResponse.json(
+        { error: "Failed to create room" },
+        { status: 500 }
+      );
+    }
 
     const token = new AccessToken(apiKey, apiSecret, {
       identity: participantName,
