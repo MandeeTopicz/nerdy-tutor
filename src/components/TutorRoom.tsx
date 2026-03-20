@@ -534,7 +534,7 @@ function TutorRoomInner({
   return (
     <div className="relative font-sans" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%", padding: "1.5rem" }}>
       {/* Avatar: centered on screen */}
-      <div style={{ width: "38vw", minWidth: "340px", maxWidth: "620px", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
+      <div style={{ width: "60vw", minWidth: "400px", maxWidth: "860px", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
         <div className="relative" style={{ width: "100%" }}>
           {/* Glow behind tile */}
           <div
@@ -555,7 +555,7 @@ function TutorRoomInner({
           {/* Avatar video */}
           <div
             className="relative border border-white/10 bg-white/5 backdrop-blur-sm"
-            style={{ width: "100%", aspectRatio: "3/4", overflow: "hidden", borderRadius: "1rem" }}
+            style={{ width: "100%", aspectRatio: "16/9", maxHeight: "60vh", overflow: "hidden", borderRadius: "1rem" }}
           >
             {videoTrack ? (
               <UnmutedVideoTrack trackRef={videoTrack} className="" />
